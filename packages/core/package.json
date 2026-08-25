@@ -1,0 +1,45 @@
+{
+  "name": "@simbtech/si-core",
+  "version": "0.1.0",
+  "description": "Shared primitives for the si CLI: template fetch, brand substitution, package-manager detection, anchor insertion",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "giget": "^2.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SIMBTECH-SAS/boilerplates.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/SIMBTECH-SAS/boilerplates#readme",
+  "bugs": {
+    "url": "https://github.com/SIMBTECH-SAS/boilerplates/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

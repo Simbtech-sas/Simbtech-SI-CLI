@@ -1,0 +1,24 @@
+{
+  "name": "@simbtech/boilerplates",
+  "private": true,
+  "version": "0.0.0",
+  "description": "SIMBTECH project boilerplates \u2014 the si CLI and its flavor templates",
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "si": "node packages/si/dist/index.js",
+    "smoke": "bash scripts/smoke.sh",
+    "release": "bash scripts/release.sh"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.5",
+    "typescript": "^5.9.2"
+  }
+}

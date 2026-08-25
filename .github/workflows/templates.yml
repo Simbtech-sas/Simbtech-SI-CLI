@@ -1,0 +1,113 @@
+name: Templates
+
+# The expensive gate: scaffold each flavor, install its real dependencies, and
+# build it. This is the only test that proves a template is not broken — a
+# template that typechecks in isolation still fails if a version range does not
+# resolve. Nightly plus on-demand, because it is slow and version drift is what
+# it exists to catch.
+on:
+  schedule: [{ cron: '0 3 * * *' }]
+  workflow_dispatch:
+  pull_request:
+    paths: ['templates/**']
+
+jobs:
+  web:
+    name: ${{ matrix.flavor }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [sisaas, sibile-rn, sibile-capacitor, sical, platform]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile && pnpm build
+
+      - name: Scaffold
+        run: SI_TEMPLATE_DIR="$PWD/templates" node packages/si/dist/index.js new /tmp/app -f ${{ matrix.flavor }} -b acme -y
+
+      # Runs before install: these checks are dependency-free on purpose, so a
+      # security regression fails in seconds rather than after a full build.
+      - name: Security gate
+        working-directory: /tmp/app
+        run: bash scripts/verify-security.sh
+
+      - name: Install and build
+        working-directory: /tmp/app
+        run: |
+          if [ -f pnpm-workspace.yaml ]; then pnpm install; else npm install; fi
+          if [ -d apps/control-plane ]; then
+            npm --prefix apps/control-plane install && bash scripts/verify.sh
+          elif [ -f pnpm-workspace.yaml ]; then
+            pnpm typecheck
+          else
+            npm run build
+          fi
+
+  sisaas-rls:
+    name: sisaas — tenant isolation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile && pnpm build
+      - run: SI_TEMPLATE_DIR="$PWD/templates" node packages/si/dist/index.js new /tmp/app -f sisaas -b acme -y
+
+      # The check that matters. It bypasses the application entirely and
+      # interrogates Postgres, because the database is the isolation boundary.
+      - name: Migrate and prove isolation
+        working-directory: /tmp/app
+        run: |
+          cp apps/server/.env.example apps/server/.env
+          docker compose -f infra/docker-compose.yml up -d postgres
+          for i in $(seq 1 60); do
+            [ "$(docker inspect -f '{{.State.Health.Status}}' acme-dev-postgres-1)" = healthy ] && break
+            sleep 2
+          done
+          docker exec -e PGPASSWORD=acme_owner_dev_pwd -i acme-dev-postgres-1 \
+            psql -U acme_owner -h 127.0.0.1 -d acme -v ON_ERROR_STOP=1 -qX < apps/server/drizzle/0000_init.sql
+          bash scripts/verify-rls.sh
+          bash scripts/verify-audit.sh
+          bash scripts/verify-security.sh
+          npm --prefix apps/server test
+
+  simice:
+    name: simice — licensing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pnpm install --frozen-lockfile && pnpm build
+      - run: SI_TEMPLATE_DIR="$PWD/templates" node packages/si/dist/index.js new /tmp/app -f simice -b acme -y
+      # No GUI toolchain needed: the licence crate has no Tauri dependency, which
+      # is the reason it is a separate crate.
+      - run: cargo test -p licence
+        working-directory: /tmp/app
+      # A release build must not carry the development signing key, whose private
+      # half is public.
+      - run: RELEASE=true bash scripts/verify-security.sh
+        working-directory: /tmp/app
+        continue-on-error: true   # expected to fail without a real key configured
+
+  sibile-flutter:
+    name: sibile-flutter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - uses: subosito/flutter-action@v2
+        with: { channel: stable }
+      - run: pnpm install --frozen-lockfile && pnpm build
+      - run: SI_TEMPLATE_DIR="$PWD/templates" node packages/si/dist/index.js new /tmp/app -f sibile-flutter -b acme -y
+      - working-directory: /tmp/app
+        run: bash scripts/verify-security.sh && flutter pub get && flutter analyze && flutter test

@@ -1,0 +1,57 @@
+{
+  "name": "@simbtech/si",
+  "version": "0.1.0",
+  "description": "SIMBTECH project scaffolder \u2014 multi-tenant SaaS, on-premise desktop, mobile, local-only apps, and the infra control plane",
+  "type": "module",
+  "bin": {
+    "si": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "scaffold",
+    "cli",
+    "boilerplate",
+    "nestjs",
+    "saas",
+    "multi-tenant",
+    "tauri",
+    "flutter"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "dev": "node src/index.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.11.0",
+    "@simbtech/si-core": "workspace:*",
+    "@simbtech/si-nest": "workspace:*",
+    "@simbtech/si-tools": "workspace:*",
+    "commander": "^14.0.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SIMBTECH-SAS/boilerplates.git",
+    "directory": "packages/si"
+  },
+  "homepage": "https://github.com/SIMBTECH-SAS/boilerplates#readme",
+  "bugs": {
+    "url": "https://github.com/SIMBTECH-SAS/boilerplates/issues"
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "resolvePackageJsonExports": true,
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "removeComments": true,
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "allowSyntheticDefaultImports": true,
+    "target": "ES2023",
+    "sourceMap": true,
+    "outDir": "./dist",
+    "incremental": true,
+    "skipLibCheck": true,
+    "strictNullChecks": true,
+    "forceConsistentCasingInFileNames": true,
+    "noImplicitAny": false,
+    "strictBindCallApply": false,
+    "noFallthroughCasesInSwitch": false,
+    // Both, together, and neither works alone here:
+    //
+    //   allowImportingTsExtensions lets `./contract.ts` resolve, but on its own
+    //   TypeScript refuses it outside --noEmit (TS5096) — so `nest build` fails
+    //   while `tsc --noEmit` passes, which is exactly the way to ship a project
+    //   that type-checks and cannot start.
+    //
+    //   rewriteRelativeImportExtensions rewrites those specifiers to `.js` on
+    //   emit, which is what makes the pair legal and the output runnable.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
+  }
+}

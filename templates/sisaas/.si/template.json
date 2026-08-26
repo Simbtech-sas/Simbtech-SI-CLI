@@ -1,0 +1,439 @@
+{
+  "$schema": "../../../packages/si/schema/template.schema.json",
+  "id": "sisaas",
+  "label": "SiSAAS",
+  "summary": "Multi-tenant SaaS \u2014 NestJS + Postgres RLS, Next.js, worker, Kafka events",
+  "brandToken": {
+    "lower": "simbkit",
+    "capital": "Simbkit",
+    "upper": "SIMBKIT"
+  },
+  "packageManager": "pnpm",
+  "toolCategories": [
+    "realtime",
+    "finance",
+    "auth",
+    "search",
+    "storage",
+    "queue",
+    "observability",
+    "admin",
+    "ai",
+    "email",
+    "geo",
+    "docs",
+    "scheduling",
+    "flags",
+    "erp",
+    "iot"
+  ],
+  "anchors": {
+    "modules": {
+      "file": "apps/server/src/app.module.ts",
+      "marker": "// si:modules"
+    },
+    "workerModules": {
+      "file": "apps/server/src/worker.module.ts",
+      "marker": "// si:modules"
+    },
+    "providers": {
+      "file": "apps/server/src/app.module.ts",
+      "marker": "// si:providers"
+    },
+    "schema": {
+      "file": "apps/server/src/database/schema/index.ts",
+      "marker": "// si:schema"
+    },
+    "controllers": {
+      "file": "apps/server/src/modules/iam/iam.module.ts",
+      "marker": "// si:controllers"
+    },
+    "events": {
+      "file": "packages/events/src/index.ts",
+      "marker": "// si:events"
+    },
+    "workflows": {
+      "file": "apps/server/src/modules/temporal/workflows/index.ts",
+      "marker": "// si:workflows"
+    },
+    "iamProviders": {
+      "file": "apps/server/src/modules/iam/iam.module.ts",
+      "marker": "// si:iam-providers"
+    }
+  },
+  "targets": {
+    "server": "apps/server",
+    "web": "apps/web",
+    "compose": "infra/docker-compose.yml",
+    "env": "apps/server/.env.example"
+  },
+  "nextSteps": [
+    "git init && git add -A && git commit -m 'initial commit'",
+    "pnpm install",
+    "cp apps/server/.env.example apps/server/.env",
+    "pnpm infra:up",
+    "pnpm --filter @{{brand}}/server db:migrate",
+    "pnpm dev"
+  ],
+  "defaultProfile": "mono",
+  "profiles": {
+    "mono": {
+      "label": "Single deployable",
+      "description": "One app: identity, features and web together. Events are delivered in-process \u2014 no Kafka to operate. Start here.",
+      "remove": []
+    },
+    "identity": {
+      "label": "Microservice \u2014 identity",
+      "description": "Owns users, tenants and memberships. The ONLY service that issues tokens.",
+      "remove": [
+        "apps/web",
+        "apps/server/src/modules/tenancy"
+      ]
+    },
+    "service": {
+      "label": "Microservice \u2014 feature service",
+      "description": "Verifies tokens, holds no user records, keeps a local tenant projection fed by events.",
+      "remove": [
+        "apps/web",
+        "apps/server/src/modules/iam",
+        "apps/server/src/database/schema/identity.ts",
+        "apps/server/drizzle/0001_identity.sql"
+      ]
+    }
+  },
+  "choices": [
+    {
+      "key": "tenancy",
+      "question": "One organisation, or many?",
+      "default": "multi",
+      "options": [
+        {
+          "value": "multi",
+          "label": "Multi-tenant",
+          "description": "Many organisations in one database, isolated by Postgres RLS.",
+          "features": [
+            "multi-tenant"
+          ]
+        },
+        {
+          "value": "single",
+          "label": "Single organisation \u2014 a normal web app",
+          "description": "No tenant column, no RLS, no memberships. Users, and your own tables.",
+          "features": [
+            "single-tenant"
+          ],
+          "remove": [
+            "apps/server/src/modules/tenancy",
+            "apps/server/src/database/schema/tenants.ts",
+            "apps/web/src/middleware.ts",
+            "scripts/verify-rls.sh"
+          ],
+          "notes": [
+            "No RLS means no `pnpm verify:rls` \u2014 the isolation it proves does not exist here, and a gate that passes vacuously is worse than none.",
+            "Going multi-tenant later is a migration, not a flag: every table needs a tenant column, a backfill and a policy."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "auth",
+      "question": "Authentication and authorization",
+      "default": "builtin",
+      "options": [
+        {
+          "value": "builtin",
+          "label": "Built-in (NestJS)",
+          "description": "Users, tenants, memberships and JWT in this codebase. No extra service to run.",
+          "features": [
+            "auth-builtin"
+          ],
+          "remove": [
+            "apps/server/src/modules/auth/interface/oidc-access.guard.ts",
+            "apps/server/src/modules/auth/interface/access.guard.oidc.ts"
+          ]
+        },
+        {
+          "value": "keycloak",
+          "label": "Keycloak",
+          "description": "Full OIDC provider \u2014 realms, federation, MFA, social login. A service to operate.",
+          "features": [
+            "auth-oidc",
+            "auth-keycloak"
+          ],
+          "tools": [
+            "keycloak"
+          ],
+          "remove": [
+            "apps/server/src/modules/iam",
+            "apps/server/drizzle/0001_identity.sql",
+            "apps/server/src/database/schema/identity.ts"
+          ],
+          "notes": [
+            "Create a realm and a confidential client, then set OIDC_ISSUER and OIDC_AUDIENCE.",
+            "Map your tenant claim to `tenantId` in the client's token mapper \u2014 the guard reads it from there."
+          ],
+          "replace": {
+            "apps/server/src/modules/auth/interface/access.guard.ts": "apps/server/src/modules/auth/interface/access.guard.oidc.ts"
+          }
+        },
+        {
+          "value": "zitadel",
+          "label": "ZITADEL",
+          "description": "OIDC provider whose organisation model maps onto tenants directly.",
+          "features": [
+            "auth-oidc",
+            "auth-zitadel"
+          ],
+          "tools": [
+            "zitadel"
+          ],
+          "remove": [
+            "apps/server/src/modules/iam",
+            "apps/server/drizzle/0001_identity.sql",
+            "apps/server/src/database/schema/identity.ts"
+          ],
+          "notes": [
+            "Organisations map to tenants. Add a custom claim carrying the org id as `tenantId`."
+          ],
+          "replace": {
+            "apps/server/src/modules/auth/interface/access.guard.ts": "apps/server/src/modules/auth/interface/access.guard.oidc.ts"
+          }
+        },
+        {
+          "value": "none",
+          "label": "None \u2014 I will write it",
+          "description": "No auth module and no guards. Endpoints are unprotected until you add something.",
+          "features": [],
+          "remove": [
+            "apps/server/src/modules/iam",
+            "apps/server/drizzle/0001_identity.sql",
+            "apps/server/src/database/schema/identity.ts",
+            "apps/server/src/modules/auth/interface/oidc-access.guard.ts",
+            "apps/server/src/modules/auth/interface/access.guard.oidc.ts"
+          ],
+          "notes": [
+            "Every route is open. The tenant id has no trusted source, so RLS has nothing to scope by until you provide one."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "storage",
+      "question": "Object storage",
+      "default": "minio",
+      "options": [
+        {
+          "value": "minio",
+          "label": "MinIO",
+          "description": "S3-compatible, self-hosted. In the dev stack already.",
+          "features": [
+            "storage-s3",
+            "storage-minio"
+          ]
+        },
+        {
+          "value": "s3",
+          "label": "External S3",
+          "description": "AWS S3 or any compatible provider. Nothing to run locally.",
+          "features": [
+            "storage-s3"
+          ],
+          "notes": [
+            "Set S3_ENDPOINT, S3_ACCESS_KEY and S3_SECRET_KEY to your provider's values."
+          ]
+        },
+        {
+          "value": "none",
+          "label": "None",
+          "description": "No file storage. The media module is removed.",
+          "features": [],
+          "remove": [
+            "apps/server/src/modules/media"
+          ]
+        }
+      ]
+    },
+    {
+      "key": "uploads",
+      "question": "File uploads",
+      "default": "presigned",
+      "options": [
+        {
+          "value": "presigned",
+          "label": "Presigned S3 URLs",
+          "description": "The browser uploads straight to storage. Simplest, and bytes never touch the API.",
+          "features": [
+            "uploads-presigned"
+          ]
+        },
+        {
+          "value": "tusd",
+          "label": "tusd (resumable)",
+          "description": "Resumable uploads over the tus protocol. For large files and unreliable connections.",
+          "features": [
+            "uploads-tus"
+          ],
+          "tools": [
+            "tusd"
+          ],
+          "notes": [
+            "tusd stores to the same S3 bucket and calls back on completion \u2014 the hook is authenticated with a shared secret.",
+            "Worth it when uploads are large or the network is poor; a presigned PUT is simpler for anything small."
+          ]
+        },
+        {
+          "value": "none",
+          "label": "None",
+          "features": []
+        }
+      ]
+    },
+    {
+      "key": "workflows",
+      "question": "Durable workflows",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "None \u2014 BullMQ is enough",
+          "description": "The template already has BullMQ for background jobs measured in seconds.",
+          "features": []
+        },
+        {
+          "value": "temporal",
+          "label": "Temporal",
+          "description": "Processes measured in days: onboarding, payouts, retries with human steps.",
+          "features": [
+            "workflows-temporal"
+          ],
+          "tools": [
+            "temporal"
+          ],
+          "notes": [
+            "Workflow code must be deterministic \u2014 no Date.now(), no Math.random(), no direct I/O. Side effects go in activities.",
+            "Put the tenant id in the workflow id rather than using a namespace per tenant."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "observability",
+      "question": "Product analytics and session replay",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "None",
+          "description": "Structured logs and metrics only. Add one later with `si add`.",
+          "features": []
+        },
+        {
+          "value": "umami",
+          "label": "Umami",
+          "description": "Page analytics, no cookies, GDPR-friendly. The lightest option.",
+          "features": [
+            "obs-umami"
+          ],
+          "tools": [
+            "umami"
+          ]
+        },
+        {
+          "value": "posthog",
+          "label": "PostHog",
+          "description": "Analytics, feature flags and session replay in one service.",
+          "features": [
+            "obs-posthog"
+          ],
+          "tools": [
+            "posthog"
+          ],
+          "notes": [
+            "Identify users by an opaque id, never by email \u2014 an analytics store is a lower-trust environment than your database."
+          ]
+        },
+        {
+          "value": "openreplay",
+          "label": "OpenReplay",
+          "description": "Session replay \u2014 see exactly what the user did before the bug.",
+          "features": [
+            "obs-openreplay"
+          ],
+          "tools": [
+            "openreplay"
+          ],
+          "notes": [
+            "Replay records what users type. Mask every personal-data field and never record an auth screen BEFORE enabling this in production."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "loadtest",
+      "question": "Load testing",
+      "default": "none",
+      "options": [
+        {
+          "value": "k6",
+          "label": "k6",
+          "description": "Load tests as code, with thresholds that fail CI.",
+          "features": [
+            "loadtest-k6"
+          ],
+          "tools": [
+            "k6"
+          ]
+        },
+        {
+          "value": "none",
+          "label": "None",
+          "features": [],
+          "description": "Add it later with `si add k6` when there is load worth testing."
+        }
+      ]
+    },
+    {
+      "key": "payments",
+      "question": "Payment provider",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "None",
+          "description": "No payments. Add one later with `si add`."
+        },
+        {
+          "value": "kpay",
+          "label": "KPay",
+          "description": "Mobile Money, card and PayPal across 12 African countries. USSD prompt or hosted link.",
+          "tools": [
+            "payments-core",
+            "payments-kpay"
+          ]
+        },
+        {
+          "value": "joonapay",
+          "label": "JoonaPay",
+          "description": "PaymentIntents with signed webhooks.",
+          "tools": [
+            "payments-core",
+            "payments-joonapay"
+          ]
+        },
+        {
+          "value": "both",
+          "label": "KPay and JoonaPay",
+          "description": "Both configured; requests route by currency and method.",
+          "tools": [
+            "payments-core",
+            "payments-kpay",
+            "payments-joonapay"
+          ],
+          "notes": [
+            "`selectProvider` routes by currency and method, and refuses rather than guessing when neither can settle a request."
+          ]
+        }
+      ]
+    }
+  ]
+}

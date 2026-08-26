@@ -1,0 +1,72 @@
+# What must pass before anything merges.
+#
+# `nest build`, not just `tsc --noEmit`: options that are legal under --noEmit
+# are illegal on emit, so a type-check-only pipeline happily green-lights a
+# project that cannot start.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: {{brand}}
+          POSTGRES_PASSWORD: {{brand}}_dev_pwd
+          POSTGRES_DB: {{brand}}
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+        ports: ['5434:5432']
+      redis:
+        image: redis:7-alpine
+        ports: ['6381:6379']
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Lint
+        run: pnpm lint
+      - name: Unit tests
+        run: pnpm test
+      - name: Build
+        # The step that catches what typecheck cannot.
+        run: pnpm build
+
+      - name: Secrets and tenant handling
+        run: pnpm verify:security
+
+      - name: Known vulnerabilities
+        # Advisory, not blocking: a transitive high with no patch available
+        # should not stop a security fix from merging. Read it; do not ignore it.
+        run: pnpm audit --audit-level high || echo "::warning::pnpm audit reported findings"
+
+  # RLS is the isolation guarantee. It is proven against a real database, as the
+  # owner role — a superuser bypasses FORCE ROW LEVEL SECURITY and the test
+  # would pass while the guarantee was gone.
+  isolation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: docker compose -f infra/docker-compose.yml up -d postgres
+      - run: pnpm verify:rls
+      - run: pnpm verify:audit

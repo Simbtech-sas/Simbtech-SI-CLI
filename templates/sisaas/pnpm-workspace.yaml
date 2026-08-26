@@ -1,0 +1,21 @@
+packages:
+  - 'apps/*'
+  - 'packages/*'
+
+# eslint-config-next does `require('next/dist/compiled/babel/eslint-parser')`
+# but declares `next` in neither dependencies nor peerDependencies — so under
+# pnpm's strict node_modules it can't resolve it and `eslint` dies on startup.
+# Patch the missing peer in until upstream ships it.
+packageExtensions:
+  eslint-config-next:
+    peerDependencies:
+      next: '*'
+
+# pnpm 10 blocks dependency build scripts by default. Approve the native ones
+# our stack needs here (add more as `pnpm install` reports ignored builds).
+onlyBuiltDependencies:
+  - esbuild
+  - '@swc/core'
+  - '@tailwindcss/oxide'
+  - sharp
+  - unrs-resolver

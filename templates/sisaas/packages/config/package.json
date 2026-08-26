@@ -1,0 +1,7 @@
+{
+  "name": "@simbkit/config",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "files": ["tsconfig.base.json"]
+}

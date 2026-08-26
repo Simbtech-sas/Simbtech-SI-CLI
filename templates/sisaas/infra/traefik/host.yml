@@ -1,0 +1,32 @@
+# Routes the gateway to the app running on your HOST.
+#
+# `pnpm dev` runs the API and the web app as ordinary processes — that is the
+# point of the local loop, a save reloads in a second — so Traefik cannot find
+# them by Docker label the way it finds every container. This file is the bridge.
+#
+# What it buys: one origin for everything. Cookies, CORS and redirects behave in
+# development the way they will behind the cluster's ingress, instead of working
+# on localhost:3100 and breaking the first time they meet a real domain.
+http:
+  routers:
+    api:
+      rule: PathPrefix(`/api`) || PathPrefix(`/auth`) || PathPrefix(`/health`)
+      service: api
+      entryPoints: [web]
+    web:
+      # Everything else. Declared last and with a lower priority so the API
+      # prefixes above win — a catch-all that outranks them swallows /auth and
+      # the login page 404s with no clue why.
+      rule: PathPrefix(`/`)
+      priority: 1
+      service: web
+      entryPoints: [web]
+  services:
+    api:
+      loadBalancer:
+        servers:
+          - url: http://host.docker.internal:8080
+    web:
+      loadBalancer:
+        servers:
+          - url: http://host.docker.internal:3100

@@ -1,0 +1,263 @@
+# Simbkit — local development infrastructure.
+#
+#   Core stack:   postgres, redis, minio (+ bucket setup), mailpit
+#   Events:       redpanda + debezium — MICROSERVICE deployments only. A single
+#                 deployable delivers events in-process and starts neither.
+#
+# Usage (from repo root):
+#   docker compose -f infra/docker-compose.yml up -d
+#
+# All credentials default to dev values via ${VAR:-default}; override by creating infra/.env
+# (auto-loaded). NOTE: image tags use moving versions for first-run convenience — pin exact
+# digests before production.
+
+name: simbkit-dev
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgres — primary datastore. The app connects as the non-superuser
+  # `simbkit_app` role (created by initdb/01-init.sql) so Row-Level Security
+  # actually constrains it. Migrations run as the `simbkit` owner role.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # wal_level=logical is required for Debezium's WAL tail. Changing it needs a
+    # restart, so it is set here rather than discovered later.
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=8
+      - -c
+      - max_wal_senders=8
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-simbkit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-simbkit_dev_pwd}
+      POSTGRES_DB: ${POSTGRES_DB:-simbkit}
+    ports:
+      # Host 5434 by default to avoid clashing with a native Postgres on 5432.
+      - '${POSTGRES_HOST_PORT:-5434}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-simbkit} -d ${POSTGRES_DB:-simbkit}']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis — cache (versioned-key invalidation) + BullMQ job queues.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --requirepass
+      - ${REDIS_PASSWORD:-simbkit_dev_pwd}
+      - --appendonly
+      - 'yes'
+    ports:
+      # 6381, and overridable — same reason Postgres sits on 5434. A developer
+      # machine very often already runs Redis on 6379, and the failure is an
+      # opaque "address already in use" from the Docker daemon.
+      - '${REDIS_HOST_PORT:-6381}:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD-SHELL', 'redis-cli -a ${REDIS_PASSWORD:-simbkit_dev_pwd} ping | grep -q PONG']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MinIO — S3-compatible object storage for images + generated files.
+  # minio-setup creates the buckets once MinIO is reachable.
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-simbkit}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-simbkit_dev_pwd}
+    ports:
+      - '9000:9000' # S3 API
+      - '9001:9001' # Web console
+    volumes:
+      - minio-data:/data
+
+  minio-setup:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-simbkit}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-simbkit_dev_pwd}
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          echo "waiting for minio..."; sleep 2;
+        done &&
+        mc mb --ignore-existing local/simbkit &&
+        mc mb --ignore-existing local/simbkit-private &&
+        mc anonymous set download local/simbkit &&
+        echo "MinIO buckets ready: simbkit (download), simbkit-private (private)."
+    restart: 'no'
+
+  # ---------------------------------------------------------------------------
+  # Mailpit — catches all dev email. SMTP on 1025, web UI on 8025.
+  # ---------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:v1.31.0
+    restart: unless-stopped
+    ports:
+      - '1025:1025' # SMTP
+      - '8025:8025' # Web UI
+    environment:
+      MP_MAX_MESSAGES: '500'
+
+  # ── the edge ────────────────────────────────────────────────────────────────
+  #
+  # The same gateway the cluster runs. Locally it earns its place twice: every
+  # service sits behind ONE origin, so CORS and cookie domains behave the way
+  # they will in production, and it load-balances across replicas —
+  # `docker compose up --scale server=3` and requests spread, which is where you
+  # find out something was holding state in memory.
+  #
+  # Routes come from container labels, so a tool you `si add` shows up here
+  # without editing anything.
+  traefik:
+    image: traefik:v3.6
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      # A second provider for the app itself. `pnpm dev` runs the API on the
+      # HOST, not in a container, so Docker labels cannot reach it — without
+      # this the gateway is decorative and every route 404s.
+      - --providers.file.filename=/etc/traefik/host.yml
+      - --entrypoints.web.address=:80
+      # Insecure dashboard, ON PURPOSE, on a local-only port. It lists every
+      # route and backend, so it must never be reachable anywhere else.
+      - --api.insecure=true
+    ports:
+      - '8090:80'
+      - '8091:8080'
+    extra_hosts:
+      # Docker Desktop resolves host.docker.internal; Linux does not, and the
+      # failure is a 502 that looks like the app is down.
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      # Read-only: Traefik needs to SEE containers, never to change one.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik/host.yml:/etc/traefik/host.yml:ro
+
+  # si:profile-begin identity,service
+  # ---------------------------------------------------------------------------
+  # Redpanda — Kafka API without the JVM or a separate coordinator. One container
+  # instead of the Strimzi/KRaft stack the cluster runs; the wire protocol the
+  # app talks to is identical, which is all the app can observe.
+  #   19092  Kafka API from the host (apps run on the host under `pnpm dev`)
+  #    9092  Kafka API from inside the compose network (debezium uses this)
+  # ---------------------------------------------------------------------------
+  redpanda:
+    image: redpandadata/redpanda:v25.2.6
+    restart: unless-stopped
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports:
+      - '19092:19092'
+      - '9644:9644' # admin API
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ['CMD-SHELL', 'rpk cluster health | grep -q "Healthy:.*true"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  redpanda-console:
+    image: redpandadata/console:v3.3.1
+    restart: unless-stopped
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+    ports:
+      # 8085, not 8080: the API itself defaults to 8080, and `pnpm infra:up`
+      # followed by `pnpm dev` would leave it unable to bind its own port.
+      - '8085:8080' # browse topics and messages
+  # ---------------------------------------------------------------------------
+  # Debezium Server — tails the Postgres WAL and publishes outbox rows to Kafka.
+  # This is what makes the transactional outbox actually deliver; the app never
+  # produces to Kafka itself.
+  #
+  # The EventRouter settings below MUST stay in sync with the header names the
+  # consumer reads (apps/server/src/modules/events/application/event-consumer.service.ts).
+  # ---------------------------------------------------------------------------
+  debezium:
+    image: quay.io/debezium/server:3.2.0.Final
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redpanda:
+        condition: service_healthy
+    environment:
+      DEBEZIUM_SINK_TYPE: kafka
+      DEBEZIUM_SINK_KAFKA_PRODUCER_BOOTSTRAP_SERVERS: redpanda:9092
+      DEBEZIUM_SINK_KAFKA_PRODUCER_KEY_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
+      DEBEZIUM_SINK_KAFKA_PRODUCER_VALUE_SERIALIZER: org.apache.kafka.common.serialization.StringSerializer
+      DEBEZIUM_SOURCE_CONNECTOR_CLASS: io.debezium.connector.postgresql.PostgresConnector
+      DEBEZIUM_SOURCE_OFFSET_STORAGE_FILE_FILENAME: /debezium/data/offsets.dat
+      DEBEZIUM_SOURCE_DATABASE_HOSTNAME: postgres
+      DEBEZIUM_SOURCE_DATABASE_PORT: '5432'
+      DEBEZIUM_SOURCE_DATABASE_USER: ${DBZ_USER:-simbkit_dbz}
+      DEBEZIUM_SOURCE_DATABASE_PASSWORD: ${DBZ_PASSWORD:-simbkit_dbz_dev_pwd}
+      DEBEZIUM_SOURCE_DATABASE_DBNAME: ${POSTGRES_DB:-simbkit}
+      DEBEZIUM_SOURCE_TOPIC_PREFIX: ${SERVICE_NAME:-simbkit}
+      DEBEZIUM_SOURCE_PLUGIN_NAME: pgoutput
+      DEBEZIUM_SOURCE_PUBLICATION_NAME: simbkit_outbox
+      DEBEZIUM_SOURCE_PUBLICATION_AUTOCREATE_MODE: disabled
+      DEBEZIUM_SOURCE_TABLE_INCLUDE_LIST: public.outbox_events
+      DEBEZIUM_SOURCE_SLOT_NAME: simbkit_outbox_slot
+      # Outbox EventRouter: turns an outbox row into a routed, keyed message.
+      DEBEZIUM_TRANSFORMS: outbox
+      DEBEZIUM_TRANSFORMS_OUTBOX_TYPE: io.debezium.transforms.outbox.EventRouter
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_ID: id
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_KEY: aggregateid
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_TYPE: type
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_TIMESTAMP: created_at
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELD_EVENT_PAYLOAD: payload
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_EXPAND_JSON_PAYLOAD: 'true'
+      # `type` and `tenant_id` ride as headers, so a consumer can route and scope
+      # without parsing the body.
+      DEBEZIUM_TRANSFORMS_OUTBOX_TABLE_FIELDS_ADDITIONAL_PLACEMENT: type:header:eventType,tenant_id:header:tenantId
+      # Topic = <service>.<aggregatetype>.v1 — the same string @simbkit/events derives.
+      # $$ escapes compose interpolation: Debezium must receive the literal
+      # ${routedByValue}, which it substitutes with the aggregatetype at runtime.
+      DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_TOPIC_REPLACEMENT: ${SERVICE_NAME:-simbkit}.$${routedByValue}.v1
+      DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_BY_FIELD: aggregatetype
+    volumes:
+      - debezium-data:/debezium/data
+  # si:profile-end
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  # si:profile-begin identity,service
+  redpanda-data:
+  debezium-data:
+  # si:profile-end

@@ -1,0 +1,29 @@
+:root {
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color-scheme: light dark;
+  background: #ffffff;
+  color: #171717;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    background: #0a0a0a;
+    color: #fafafa;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  /* A desktop app is not a web page: text selection everywhere reads as unfinished. */
+  user-select: none;
+}
+
+input,
+textarea,
+code {
+  user-select: text;
+}

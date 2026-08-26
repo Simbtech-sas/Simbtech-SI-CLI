@@ -1,0 +1,28 @@
+[package]
+name = "simbkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Simbkit on-premise desktop application"
+
+[lib]
+name = "simbkit_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+licence = { path = "../crates/licence" }
+tauri = { version = "2.11.5", features = [] }
+tauri-plugin-dialog = "2.7.2"
+tauri-plugin-sql = { version = "2.4.0", features = ["sqlite"] } # si:when db-sqlite
+tauri-plugin-sql = { version = "2.4.0", features = ["postgres"] } # si:when db-postgres
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+chrono = "0.4.45"
+machine-uid = "0.6.0"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2.10.1"

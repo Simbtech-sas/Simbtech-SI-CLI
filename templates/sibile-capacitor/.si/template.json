@@ -1,0 +1,40 @@
+{
+  "id": "sibile-capacitor",
+  "label": "SiBILE (Capacitor)",
+  "summary": "Mobile \u2014 Vite + Capacitor, web stack shipped as an app",
+  "brandToken": {
+    "lower": "simbkit",
+    "capital": "Simbkit",
+    "upper": "SIMBKIT"
+  },
+  "packageManager": "npm",
+  "toolCategories": [
+    "realtime",
+    "ai",
+    "geo",
+    "observability",
+    "local-first",
+    "finance"
+  ],
+  "anchors": {
+    "modules": {
+      "file": "src/api/index.ts",
+      "marker": "// si:modules"
+    },
+    "routes": {
+      "file": "src/App.tsx",
+      "marker": "{/* si:routes */}"
+    }
+  },
+  "targets": {
+    "src": "src",
+    "env": ".env.example"
+  },
+  "nextSteps": [
+    "git init && git add -A && git commit -m 'initial commit'",
+    "npm install",
+    "cp .env.example .env",
+    "npm run dev",
+    "npx cap add android   # then: npm run cap:android"
+  ]
+}

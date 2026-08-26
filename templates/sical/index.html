@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
+    <!--
+      This CSP is the enforcement. `connect-src 'self'` confines every fetch,
+      XHR, WebSocket and EventSource to this app's own origin, so no data can
+      leave the machine — while still letting the local database engine load its
+      own WASM. `'none'` would block that too and break the app.
+
+      Removing a directive here removes the guarantee, so `npm run build` checks
+      that they are all still present.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline'; worker-src 'self' blob:; form-action 'none'; frame-ancestors 'none'; base-uri 'self'"
+    />
+    <title>Simbkit</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,112 @@
+{
+  "id": "simice",
+  "label": "SiMICE",
+  "summary": "On-premise desktop \u2014 Tauri v2, licence keys, standalone / LAN / cloud-sync",
+  "brandToken": {
+    "lower": "simbkit",
+    "capital": "Simbkit",
+    "upper": "SIMBKIT"
+  },
+  "packageManager": "npm",
+  "toolCategories": [
+    "ai",
+    "iot",
+    "local-first",
+    "licensing",
+    "realtime"
+  ],
+  "anchors": {
+    "commands": {
+      "file": "src-tauri/src/lib.rs",
+      "marker": "// si:commands"
+    },
+    "modules": {
+      "file": "src/licence.ts",
+      "marker": "// si:modules"
+    }
+  },
+  "targets": {
+    "src": "src",
+    "rust": "src-tauri",
+    "env": ".env.example"
+  },
+  "nextSteps": [
+    "git init && git add -A && git commit -m 'initial commit'",
+    "npm install",
+    "npm run test:licence",
+    "npm run licence:keygen        # keep the private half OFFLINE",
+    "npm run desktop"
+  ],
+  "choices": [
+    {
+      "key": "database",
+      "question": "Local database",
+      "default": "sqlite",
+      "options": [
+        {
+          "value": "sqlite",
+          "label": "SQLite (embedded)",
+          "description": "One machine, one process, zero administration. ACID with WAL journaling.",
+          "features": [
+            "db-sqlite"
+          ],
+          "remove": [
+            "src-tauri/migrations/postgres"
+          ]
+        },
+        {
+          "value": "postgres",
+          "label": "Postgres",
+          "description": "Several machines on a LAN sharing one dataset. Required for lan-server mode.",
+          "features": [
+            "db-postgres"
+          ],
+          "remove": [
+            "src-tauri/migrations/sqlite"
+          ],
+          "notes": [
+            "Set SIMBKIT_DATABASE_URL on each client, and build with SIMBKIT_DATABASE=postgres.",
+            "Postgres must be reachable from every client \u2014 usually the machine running lan-server mode."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "mode",
+      "question": "Deployment mode",
+      "default": "standalone",
+      "options": [
+        {
+          "value": "standalone",
+          "label": "Standalone",
+          "description": "One machine, no sockets opened at all.",
+          "features": [
+            "mode-standalone"
+          ]
+        },
+        {
+          "value": "lan-server",
+          "label": "LAN server",
+          "description": "One instance serves the others on the local network. Needs Postgres.",
+          "features": [
+            "mode-lan"
+          ],
+          "notes": [
+            "Build with SIMBKIT_MODE=lan-server. SQLite over a network share corrupts \u2014 use --database postgres."
+          ]
+        },
+        {
+          "value": "cloud-sync",
+          "label": "Cloud sync",
+          "description": "Local database plus an outbox that syncs when a server is reachable.",
+          "features": [
+            "mode-cloud"
+          ],
+          "notes": [
+            "Build with SIMBKIT_MODE=cloud-sync and decide the conflict policy before the first deployment."
+          ]
+        }
+      ]
+    }
+  ]
+}

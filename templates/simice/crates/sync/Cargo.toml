@@ -1,0 +1,21 @@
+[package]
+name = "sync"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The cloud-sync protocol client. No HTTP and no database — both are traits, so the whole thing is testable without a network or a GUI toolkit."
+
+[features]
+# The real HTTP transport. Off by default so the protocol tests — and anything
+# that only needs the wire types — compile without a TLS stack.
+default = ["http"]
+http = ["dep:ureq"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# Blocking, small, rustls-backed. The Transport trait is synchronous and this
+# runs on a background thread, so pulling in an async runtime would buy nothing
+# and cost a tokio-sized dependency in a desktop binary.
+ureq = { version = "3.1.4", optional = true, default-features = false, features = ["rustls"] }

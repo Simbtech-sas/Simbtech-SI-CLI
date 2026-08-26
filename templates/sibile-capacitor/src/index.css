@@ -1,0 +1,25 @@
+@import 'tailwindcss';
+
+@theme {
+  --color-brand: #2563eb;
+  --color-brand-fg: #ffffff;
+}
+
+/* Capacitor renders edge to edge. These keep content clear of the notch and the
+   home indicator on every device, including ones that did not exist yet. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  /* Native apps do not rubber-band the whole page. */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}

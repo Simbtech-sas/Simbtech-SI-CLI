@@ -1,0 +1,36 @@
+{
+  "name": "simbkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -b --noEmit",
+    "tauri": "tauri",
+    "desktop": "tauri dev",
+    "desktop:build": "npm run verify:security && tauri build",
+    "licence:keygen": "cargo run -q -p licence --example issue -- keygen",
+    "licence:sign": "cargo run -q -p licence --example issue -- sign",
+    "test:licence": "cargo test -p licence",
+    "verify:security": "bash scripts/verify-security.sh"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.102.8",
+    "@tauri-apps/api": "^2.9.0",
+    "@tauri-apps/plugin-dialog": "^2.4.0",
+    "@tauri-apps/plugin-sql": "^2.3.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.0",
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "typescript": "^5.9.2",
+    "vite": "^8.2.2"
+  }
+}

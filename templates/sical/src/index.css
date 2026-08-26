@@ -1,0 +1,52 @@
+/* Fonts are the system stack on purpose: a webfont is a network request, and
+   this app is not allowed one. Bundle a font file if you need a specific face. */
+:root {
+  --bg: #ffffff;
+  --fg: #171717;
+  --muted: #737373;
+  --line: #e5e5e5;
+  --accent: #2563eb;
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0a0a0a;
+    --fg: #fafafa;
+    --muted: #a3a3a3;
+    --line: #262626;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.5;
+}
+
+.page { max-width: 46rem; margin: 0 auto; padding: 2.5rem 1.25rem; }
+h1 { margin: 0; font-size: 1.75rem; }
+.muted { color: var(--muted); }
+.error { color: #dc2626; }
+
+form { display: flex; gap: .5rem; margin: 1.5rem 0; }
+input {
+  flex: 1; padding: .625rem .75rem; border: 1px solid var(--line);
+  border-radius: .5rem; background: var(--bg); color: var(--fg); font: inherit;
+}
+button {
+  padding: .625rem 1rem; border: 1px solid var(--line); border-radius: .5rem;
+  background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer;
+}
+button:disabled { opacity: .5; cursor: default; }
+
+ul { list-style: none; padding: 0; display: grid; gap: .5rem; }
+li { display: flex; gap: .5rem; align-items: center; }
+li button { background: transparent; color: var(--muted); font-weight: 400; }
+
+footer { display: flex; gap: .5rem; margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--line); }
+footer button { background: transparent; color: var(--fg); }

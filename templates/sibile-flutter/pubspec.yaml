@@ -1,0 +1,40 @@
+name: simbkit
+description: Simbkit mobile application
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # State management. Riverpod over Bloc here because providers compose and
+  # override cleanly in tests without a service locator.
+  flutter_riverpod: ^3.4.2
+  # Routing with typed routes and redirect-based auth guarding.
+  go_router: ^18.0.0
+  # HTTP. dio, for its interceptors — token refresh lives in one.
+  dio: ^5.11.0
+  # Local database. Drift is typed SQL, not a document store.
+  drift: ^2.34.3
+  drift_flutter: ^0.3.1
+  # Credentials go to the Keychain / Keystore, never to shared preferences.
+  flutter_secure_storage: ^11.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  # Codegen for Drift tables only. Lower bounds, no upper pin: these track the
+  # `analyzer` version while the Flutter SDK pins `meta`, so an exact pin stops
+  # solving the moment the two drift apart.
+  #
+  # Riverpod, retrofit and json_serializable generators are deliberately absent.
+  # This template writes providers and `fromJson` by hand — adding a generator
+  # for code nobody generates is three more packages in the solver for nothing.
+  build_runner: ^2.4.0
+  drift_dev: ^2.34.0
+
+flutter:
+  uses-material-design: true

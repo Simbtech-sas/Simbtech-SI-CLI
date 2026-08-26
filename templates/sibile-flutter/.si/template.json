@@ -1,0 +1,39 @@
+{
+  "id": "sibile-flutter",
+  "label": "SiBILE (Flutter)",
+  "summary": "Mobile \u2014 feature-first, Riverpod, go_router, Drift",
+  "brandToken": {
+    "lower": "simbkit",
+    "capital": "Simbkit",
+    "upper": "SIMBKIT"
+  },
+  "toolCategories": [
+    "realtime",
+    "ai",
+    "geo",
+    "observability",
+    "local-first",
+    "finance"
+  ],
+  "anchors": {
+    "providers": {
+      "file": "lib/core/providers.dart",
+      "marker": "// si:providers"
+    },
+    "routes": {
+      "file": "lib/core/router/app_router.dart",
+      "marker": "// si:routes"
+    }
+  },
+  "targets": {
+    "lib": "lib",
+    "env": ".env.example"
+  },
+  "nextSteps": [
+    "git init && git add -A && git commit -m 'initial commit'",
+    "flutter create . --project-name {{brand}} --platforms android,ios",
+    "flutter pub get",
+    "dart run build_runner build --delete-conflicting-outputs",
+    "flutter run --dart-define=API_URL=http://10.0.2.2:8080"
+  ]
+}

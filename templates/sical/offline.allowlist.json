@@ -1,0 +1,14 @@
+{
+  "$comment": [
+    "Absolute URLs permitted to appear in the built bundle.",
+    "Every entry must be a string that is never FETCHED — an XML namespace, a",
+    "documentation link, a spec reference. Adding a real endpoint here defeats the",
+    "guarantee this flavor exists to provide, so each addition should be argued for",
+    "in the pull request that adds it."
+  ],
+  "urlPrefixes": [
+    "http://www.w3.org/",
+    "https://www.w3.org/",
+    "https://react.dev/errors/"
+  ]
+}

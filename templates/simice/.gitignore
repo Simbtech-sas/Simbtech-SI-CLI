@@ -1,0 +1,9 @@
+node_modules/
+dist/
+target/
+.env
+# Never commit a signing key. Losing control of it means every licence you have
+# ever issued can be forged, and the only fix is shipping a new binary.
+*.private.key
+licence-signing-key*
+.DS_Store

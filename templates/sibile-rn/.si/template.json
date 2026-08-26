@@ -1,0 +1,36 @@
+{
+  "id": "sibile-rn",
+  "label": "SiBILE (React Native)",
+  "summary": "Mobile \u2014 Expo, expo-router, NativeWind, TanStack Query",
+  "brandToken": {
+    "lower": "simbkit",
+    "capital": "Simbkit",
+    "upper": "SIMBKIT"
+  },
+  "packageManager": "npm",
+  "toolCategories": [
+    "realtime",
+    "ai",
+    "geo",
+    "observability",
+    "local-first",
+    "finance"
+  ],
+  "anchors": {
+    "modules": {
+      "file": "src/api/index.ts",
+      "marker": "// si:modules"
+    }
+  },
+  "targets": {
+    "app": "app",
+    "src": "src",
+    "env": ".env.example"
+  },
+  "nextSteps": [
+    "git init && git add -A && git commit -m 'initial commit'",
+    "npm install",
+    "cp .env.example .env",
+    "npx expo start"
+  ]
+}

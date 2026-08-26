@@ -1,0 +1,38 @@
+id: keycloak
+name: Keycloak
+category: auth
+summary: Full OIDC/SAML identity provider with realms, federation and MFA
+repo: https://github.com/keycloak/keycloak
+license: Apache-2.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "openid-client"
+
+env:
+  - key: KEYCLOAK_URL
+    value: "http://localhost:8180"
+  - key: KEYCLOAK_REALM
+    value: "{{brand}}"
+  - key: KEYCLOAK_CLIENT_ID
+    value: "{{brand}}-api"
+  - key: KEYCLOAK_CLIENT_SECRET
+    comment: From the Keycloak admin console
+
+compose: compose.yml
+
+deploy:
+  image: quay.io/keycloak/keycloak:26.7
+  port: 8080
+  needsDatabase: true
+  ingress: true
+  env:
+    KC_DB: postgres
+    KC_DB_URL: "jdbc:postgresql://{{db.host}}:5432/{{db.name}}"
+    KC_DB_USERNAME: "{{db.username}}"
+    KC_DB_PASSWORD: "{{db.password}}"
+
+notes:
+  - One realm per tenant scales to hundreds, not thousands. For many tenants use one realm plus an organisation/group claim.
+  - This replaces the built-in IAM module — do not run both as the source of truth.

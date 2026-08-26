@@ -1,0 +1,16 @@
+id: calcom
+name: Cal.com
+category: scheduling
+summary: Self-hosted scheduling and availability — booking pages, calendar sync
+repo: https://github.com/calcom/cal.com
+license: AGPL-3.0
+flavors: [sisaas, platform]
+
+env:
+  - key: CALCOM_URL
+    value: "http://localhost:3070"
+  - key: CALCOM_API_KEY
+
+notes:
+  - Heavy to self-host (Next.js app plus Postgres). Use the upstream compose file rather than this stack.
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `calcom` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

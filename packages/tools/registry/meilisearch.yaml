@@ -1,0 +1,31 @@
+id: meilisearch
+name: Meilisearch
+category: search
+summary: Typo-tolerant full-text search with sub-50ms responses
+repo: https://github.com/meilisearch/meilisearch
+license: MIT
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "meilisearch"
+
+env:
+  - key: MEILI_URL
+    value: "http://localhost:7700"
+  - key: MEILI_MASTER_KEY
+    value: meili_dev_master_key
+    comment: At least 16 bytes in production
+
+compose: compose.yml
+
+deploy:
+  image: getmeili/meilisearch:v1.24
+  port: 7700
+  storage: 20Gi
+  env:
+    MEILI_ENV: production
+
+notes:
+  - Prefix every index with the tenant id, or use one index with a tenant_id filter and a tenant-scoped API key — Meilisearch has no tenancy of its own.
+  - "Tenant tokens (`generateTenantToken`) are the safe way to let a browser query directly."

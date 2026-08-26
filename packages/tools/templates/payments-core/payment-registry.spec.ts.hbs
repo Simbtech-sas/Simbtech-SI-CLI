@@ -1,0 +1,59 @@
+import { PaymentRegistry } from './payment-registry';
+import type { PaymentProvider } from '../domain/payment-provider.port';
+
+function provider(id: string, over: Partial<PaymentProvider> = {}): PaymentProvider {
+  return {
+    id,
+    capabilities: {
+      autoCharge: false,
+      paymentLinks: true,
+      ussdPush: false,
+      methods: ['mobile-money'],
+      currencies: ['XOF'],
+      refunds: 'none',
+    },
+    charge: async () => ({ outcome: 'failed', reason: 'stub', retryable: false }),
+    get: async () => ({ reference: 'r', state: 'pending', amount: '0', currency: 'XOF' }),
+    refund: async () => ({ reference: 'r' }),
+    verifyWebhook: () => null,
+    ...over,
+  } as PaymentProvider;
+}
+
+describe('PaymentRegistry', () => {
+  it('refuses a duplicate registration instead of silently replacing one', () => {
+    const registry = new PaymentRegistry();
+    registry.register(provider('kpay'));
+    expect(() => registry.register(provider('kpay'))).toThrow(/registered twice/);
+  });
+
+  it('names what IS available when asked for a provider that is not', () => {
+    const registry = new PaymentRegistry();
+    registry.register(provider('kpay'));
+    expect(() => registry.byId('joonapay')).toThrow(/Available: kpay/);
+  });
+
+  it('returns the event from whichever provider can verify it', () => {
+    const registry = new PaymentRegistry();
+    registry.register(provider('kpay'));
+    registry.register(
+      provider('joonapay', {
+        verifyWebhook: () => ({
+          provider: 'joonapay',
+          reference: 'GGUWWIMRJHHF',
+          state: 'settled',
+          occurredAt: '2026-03-13T12:00:00+00:00',
+        }),
+      }),
+    );
+    expect(registry.verifyWebhook('{}', {})?.provider).toBe('joonapay');
+  });
+
+  it('returns null when no provider vouches for the request', () => {
+    // The case that matters: an unverified webhook must never look like a
+    // settled payment.
+    const registry = new PaymentRegistry();
+    registry.register(provider('kpay'));
+    expect(registry.verifyWebhook('{}', {})).toBeNull();
+  });
+});

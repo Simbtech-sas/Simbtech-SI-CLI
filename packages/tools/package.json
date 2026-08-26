@@ -1,0 +1,49 @@
+{
+  "name": "@simbtech/si-tools",
+  "version": "0.1.0",
+  "description": "Registry of self-hostable open-source tools si can wire into a project",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "registry",
+    "templates"
+  ],
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@simbtech/si-core": "workspace:*",
+    "handlebars": "^4.7.8",
+    "yaml": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "typescript": "^5.9.2"
+  },
+  "publishConfig": {
+    "access": "restricted"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SIMBTECH-SAS/boilerplates.git",
+    "directory": "packages/tools"
+  },
+  "homepage": "https://github.com/SIMBTECH-SAS/boilerplates#readme",
+  "bugs": {
+    "url": "https://github.com/SIMBTECH-SAS/boilerplates/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

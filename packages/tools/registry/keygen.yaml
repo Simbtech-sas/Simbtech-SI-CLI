@@ -1,0 +1,17 @@
+id: keygen
+name: Keygen
+category: licensing
+summary: Licence key issuing, activation and expiry for distributed software
+repo: https://github.com/keygen-sh/keygen-api
+license: Elastic-2.0
+flavors: [simice, sisaas, platform]
+
+env:
+  - key: KEYGEN_URL
+    value: "http://localhost:3090"
+  - key: KEYGEN_ACCOUNT_ID
+  - key: KEYGEN_PRODUCT_TOKEN
+
+notes:
+  - SiMICE ships offline Ed25519 licence files by default; add this only when you need online activation and revocation.
+  - "Elastic Licence 2.0: self-host freely, but you may not offer it as a managed service."

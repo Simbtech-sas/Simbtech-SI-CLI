@@ -1,0 +1,134 @@
+/**
+ * What the application needs from a payment provider, independent of which one.
+ *
+ * Everything above this line — subscriptions, orders, refunds — talks to this
+ * interface. Swapping KPay for JoonaPay, or running both, changes which adapter
+ * is bound and nothing else.
+ *
+ * What the port deliberately does NOT hide is `capabilities`. Providers differ
+ * in ways that change application behaviour, and papering over that produces an
+ * abstraction that lies: a subscription engine that assumes silent charging will
+ * mark every Mobile Money renewal failed within seconds.
+ */
+
+export interface ProviderCapabilities {
+  /** Charge without the customer present. False for Mobile Money USSD. */
+  autoCharge: boolean;
+  /** Return a URL the customer opens to pay. */
+  paymentLinks: boolean;
+  /** Push a prompt straight to a handset. */
+  ussdPush: boolean;
+  /** Methods this provider settles. */
+  methods: ReadonlyArray<'mobile-money' | 'card' | 'paypal' | 'bank'>;
+  /** ISO-4217 codes this provider handles. */
+  currencies: readonly string[];
+  refunds: 'full' | 'partial' | 'none';
+}
+
+export interface ChargeRequest {
+  tenantId: string;
+  /** Our id. Used as the provider's idempotency key. */
+  externalId: string;
+  /** Decimal string. Never a float — that rule holds across every provider. */
+  amount: string;
+  currency: string;
+  description: string;
+  method?: 'mobile-money' | 'card' | 'paypal';
+  /** Direct prompt where the provider supports it, otherwise a link. */
+  mode?: 'ussd' | 'link';
+  phoneNumber?: string;
+  email?: string;
+  returnUrl?: string;
+  cancelUrl?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export type ChargeResult =
+  /** Settled synchronously. Only possible when `autoCharge` is true. */
+  | { outcome: 'paid'; reference: string }
+  /** The customer must act. Wait for the provider's webhook. */
+  | { outcome: 'awaiting-customer'; reference: string; paymentUrl?: string }
+  | { outcome: 'failed'; reason: string; retryable: boolean };
+
+export type PaymentState = 'pending' | 'processing' | 'settled' | 'failed' | 'cancelled' | 'refunded';
+
+export interface PaymentSnapshot {
+  reference: string;
+  state: PaymentState;
+  amount: string;
+  currency: string;
+  failureReason?: string | null;
+  settledAt?: string | null;
+}
+
+/** A verified webhook, normalised across providers. */
+export interface ProviderEvent {
+  provider: string;
+  reference: string;
+  externalId?: string;
+  state: PaymentState;
+  amount?: string;
+  currency?: string;
+  failureReason?: string | null;
+  occurredAt: string;
+}
+
+export interface PaymentProvider {
+  readonly id: string;
+  readonly capabilities: ProviderCapabilities;
+
+  charge(request: ChargeRequest): Promise<ChargeResult>;
+  /** The authoritative status. Never trust a browser redirect for this. */
+  get(reference: string): Promise<PaymentSnapshot>;
+  refund(reference: string, reason?: string, externalId?: string): Promise<{ reference: string }>;
+
+  /**
+   * Verify a webhook and normalise it.
+   *
+   * Takes the RAW body: re-serialising the parsed JSON changes key order and
+   * whitespace, so the signature stops matching — and the usual "fix" for that
+   * is to stop verifying.
+   *
+   * Returns null when the signature does not verify. The caller must treat null
+   * as hostile, never as "probably fine".
+   */
+  verifyWebhook(rawBody: Buffer | string, headers: Record<string, unknown>): ProviderEvent | null;
+}
+
+export const PAYMENT_PROVIDER = Symbol('PAYMENT_PROVIDER');
+
+/**
+ * Registry for a deployment that offers more than one provider — a customer in
+ * Cameroon paying by Mobile Money and one in Europe paying by card are the same
+ * order through two different rails.
+ */
+export const PAYMENT_PROVIDERS = Symbol('PAYMENT_PROVIDERS');
+
+export function selectProvider(
+  providers: readonly PaymentProvider[],
+  request: ChargeRequest,
+): PaymentProvider {
+  if (providers.length === 0) throw new Error('no payment provider is configured');
+
+  const capable = providers.filter(
+    (p) =>
+      p.capabilities.currencies.includes(request.currency) &&
+      (!request.method || p.capabilities.methods.includes(request.method)),
+  );
+
+  if (capable.length === 0) {
+    // Explicit, because the alternative is charging through a provider that
+    // cannot settle the currency and discovering it at reconciliation.
+    throw new Error(
+      `no configured provider settles ${request.currency}` +
+        (request.method ? ` by ${request.method}` : '') +
+        `. Configured: ${providers.map((p) => p.id).join(', ')}`,
+    );
+  }
+
+  // A USSD request prefers a provider that can actually push a prompt.
+  if (request.mode === 'ussd') {
+    return capable.find((p) => p.capabilities.ussdPush) ?? capable[0]!;
+  }
+  return capable[0]!;
+}

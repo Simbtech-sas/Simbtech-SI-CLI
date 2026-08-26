@@ -1,0 +1,80 @@
+import { boolean, index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { users } from './identity';
+
+/**
+ * A user's second factor.
+ *
+ * The secret is stored ENCRYPTED, not plain. A TOTP secret is a bearer
+ * credential: anyone holding it can mint valid codes forever, so a database
+ * dump must not be a set of working second factors.
+ */
+export const mfaEnrolments = pgTable(
+  'mfa_enrolments',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' })
+      .unique(),
+    /** AES-256-GCM via EncryptionService. Never the base32 secret itself. */
+    secretEncrypted: text('secret_encrypted').notNull(),
+    /** Enrolment is not complete until one code has been verified. */
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+    /**
+     * The last counter step accepted, so a code cannot be replayed inside its
+     * own 30-second window. Without it, a shoulder-surfed code works twice.
+     */
+    lastStep: text('last_step'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('mfa_enrolments_user_idx').on(t.userId)],
+);
+
+/**
+ * Single-use recovery codes, hashed.
+ *
+ * Hashed with the same algorithm as a password, because that is what they are:
+ * a credential a human keeps on paper. Storing them plain turns the recovery
+ * list into a bypass for every account at once.
+ */
+export const mfaRecoveryCodes = pgTable(
+  'mfa_recovery_codes',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    codeHash: text('code_hash').notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('mfa_recovery_user_idx').on(t.userId)],
+);
+
+/**
+ * Where a session came from, so a user can end one they do not recognise.
+ *
+ * Requirement 4.7 is "device management", and the useful form of it is not an
+ * inventory — it is being able to see "Chrome, Douala, 3 minutes ago" and press
+ * revoke.
+ */
+export const userDevices = pgTable(
+  'user_devices',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** SHA-256 of the refresh token family, never the token. */
+    sessionHash: text('session_hash').notNull().unique(),
+    label: text('label'),
+    ipAddress: text('ip_address'),
+    userAgent: text('user_agent'),
+    trusted: boolean('trusted').notNull().default(false),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('user_devices_user_idx').on(t.userId, t.lastSeenAt)],
+);

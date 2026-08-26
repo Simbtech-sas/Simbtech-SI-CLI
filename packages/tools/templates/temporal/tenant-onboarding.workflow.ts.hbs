@@ -1,0 +1,69 @@
+import { condition, defineSignal, proxyActivities, setHandler, workflowInfo } from '@temporalio/workflow';
+import type { Activities, OnboardingContext } from '../application/activities';
+import { EMAIL_VERIFIED_SIGNAL } from '../domain/workflow-signals';
+
+/**
+ * Onboarding, as a durable process.
+ *
+ * This is the shape of problem Temporal exists for, and the shape neither Kafka
+ * nor BullMQ handles: **one process, several steps, waiting days on a human.**
+ *
+ * - A Kafka consumer cannot wait. It has to hand the message back and remember
+ *   where it was somewhere else — which is a state machine in a database, and a
+ *   cron to advance it, hand-written.
+ * - A BullMQ delayed job can wait, but a chain of them has no shared history: if
+ *   step three fails you cannot see what steps one and two did, and a redeploy
+ *   mid-chain leaves an orphan.
+ *
+ * Here the wait IS the code. `condition(..., '7 days')` survives a worker
+ * restart, a deploy and a machine dying, because the timer lives in Temporal's
+ * history rather than in this process's memory.
+ *
+ * Determinism rules, which the SDK enforces and which are easy to break by
+ * accident: no `Date.now()`, no `Math.random()`, no `fetch`, no database. Every
+ * one of those is an activity. `workflowInfo()` and `condition()` are the
+ * replay-safe substitutes for the clock.
+ */
+export const emailVerified = defineSignal<[]>(EMAIL_VERIFIED_SIGNAL);
+
+/** Long enough for a holiday, short enough that a dead lead stops occupying a slot. */
+export const VERIFICATION_WINDOW = '7 days';
+
+const activities = proxyActivities<Activities>({
+  startToCloseTimeout: '1 minute',
+  retry: {
+    // The outbox write is idempotent per workflow id, so retrying is safe.
+    // Five attempts over a few minutes covers a database failover; beyond that
+    // something is wrong that retrying will not fix.
+    maximumAttempts: 5,
+    initialInterval: '2 seconds',
+  },
+});
+
+export async function tenantOnboarding(input: {
+  tenantId: string;
+  tenantName: string;
+}): Promise<'activated' | 'abandoned'> {
+  const context: OnboardingContext = {
+    tenantId: input.tenantId,
+    tenantName: input.tenantName,
+    workflowId: workflowInfo().workflowId,
+  };
+
+  let verified = false;
+  setHandler(emailVerified, () => {
+    verified = true;
+  });
+
+  // Returns true if the signal arrived, false if the window elapsed. Both are
+  // ordinary outcomes — neither is an error, and neither should page anyone.
+  const arrived = await condition(() => verified, VERIFICATION_WINDOW);
+
+  if (!arrived) {
+    await activities.publishOnboardingAbandoned(context, 'email-verification');
+    return 'abandoned';
+  }
+
+  await activities.publishTenantActivated(context);
+  return 'activated';
+}

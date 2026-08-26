@@ -1,0 +1,8 @@
+import { Module } from '@nestjs/common';
+import { BlnkService } from './blnk.service';
+
+@Module({
+  providers: [BlnkService],
+  exports: [BlnkService],
+})
+export class BlnkModule {}

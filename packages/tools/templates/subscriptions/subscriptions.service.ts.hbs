@@ -1,0 +1,349 @@
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { and, eq, lte, sql } from 'drizzle-orm';
+import { randomUUID } from 'node:crypto';
+import { DatabaseService, type TenantTx } from '../../../database/database.service';
+import { plans, subscriptionInvoices, subscriptions, tenants } from '../../../database/schema';
+import { InvoiceIssued, InvoicePaid, SubscriptionPaymentRequested } from '@{{brand}}/events';
+import { OutboxService } from '../../events/application/outbox.service';
+import { BILLING_PORT, type BillingPort } from '../domain/billing-port';
+import { GRACE_DAYS, RENEWAL_LEAD_DAYS, nextPeriodEnd, stepFor } from '../domain/dunning';
+
+export interface StartSubscription {
+  tenantId: string;
+  planCode: string;
+  billingPhone?: string;
+  billingEmail?: string;
+}
+
+/**
+ * Subscription lifecycle.
+ *
+ * The state machine, and why it has a state a card-based engine does not:
+ *
+ *   trialing ──▶ pending_payment ──▶ active
+ *                      │                │
+ *                      ▼                ▼
+ *                  past_due ◀───── (period ends)
+ *                      │
+ *                      ▼
+ *                  suspended ──▶ cancelled
+ *
+ * `pending_payment` exists because Mobile Money renewals wait on a human. Without
+ * it, every renewal would look like a failure for as long as it took the customer
+ * to pick up their phone.
+ *
+ * Access is cut at `suspended`, and the data is kept. Deleting on non-payment
+ * turns a billing problem into a support catastrophe.
+ */
+@Injectable()
+export class SubscriptionsService {
+  private readonly log = new Logger(SubscriptionsService.name);
+
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly outbox: OutboxService,
+    @Inject(BILLING_PORT) private readonly billing: BillingPort,
+  ) {}
+
+  async start(input: StartSubscription) {
+    const [plan] = await this.database.db.select().from(plans).where(eq(plans.code, input.planCode));
+    if (!plan) throw new NotFoundException(`no plan with code "${input.planCode}"`);
+
+    const now = new Date();
+    const trialEnd =
+      plan.trialDays > 0 ? new Date(now.getTime() + plan.trialDays * 86_400_000) : null;
+
+    return this.database.runInTenantContext(input.tenantId, async (tx) => {
+      const [subscription] = await tx
+        .insert(subscriptions)
+        .values({
+          tenantId: input.tenantId,
+          planId: plan.id,
+          // A trial is active access that has not been paid for. Anything else
+          // gets billed immediately.
+          status: trialEnd ? 'trialing' : 'pending_payment',
+          currentPeriodStart: now,
+          currentPeriodEnd: trialEnd ?? nextPeriodEnd(now, plan.interval),
+          trialEndsAt: trialEnd,
+          billingPhone: input.billingPhone ?? null,
+          billingEmail: input.billingEmail ?? null,
+        })
+        .returning();
+
+      if (!trialEnd) await this.requestPayment(tx, subscription!, plan, now);
+      return subscription!;
+    });
+  }
+
+  /** Entitlement check. Suspended and cancelled tenants keep their data, not their access. */
+  async hasAccess(tenantId: string, feature?: string): Promise<boolean> {
+    const current = await this.current(tenantId);
+    if (!current) return false;
+    if (!['active', 'trialing', 'pending_payment', 'past_due'].includes(current.subscription.status)) {
+      return false;
+    }
+    if (!feature) return true;
+    return current.plan.features[feature] === true;
+  }
+
+  async current(tenantId: string) {
+    return this.database.runInTenantContext(tenantId, async (tx) => {
+      const [row] = await tx
+        .select({ subscription: subscriptions, plan: plans })
+        .from(subscriptions)
+        .innerJoin(plans, eq(plans.id, subscriptions.planId))
+        .where(eq(subscriptions.tenantId, tenantId))
+        .limit(1);
+      return row;
+    });
+  }
+
+  /**
+   * Cancel at the end of the period, not immediately.
+   *
+   * The customer paid for this period. Cutting access the moment they click
+   * cancel is taking money for time they do not get, and it is the fastest way
+   * to turn a quiet churn into a chargeback.
+   */
+  async cancel(tenantId: string, immediately = false) {
+    return this.database.runInTenantContext(tenantId, async (tx) => {
+      const [updated] = await tx
+        .update(subscriptions)
+        .set(
+          immediately
+            ? { status: 'cancelled', cancelledAt: new Date(), updatedAt: new Date() }
+            : { cancelAtPeriodEnd: true, updatedAt: new Date() },
+        )
+        .where(eq(subscriptions.tenantId, tenantId))
+        .returning();
+      return updated;
+    });
+  }
+
+  /**
+   * Create the invoice and ask for payment.
+   *
+   * The unique index on (subscription, period_start) is what makes a retried job
+   * safe: a second attempt for the same period conflicts instead of charging
+   * twice.
+   */
+  private async requestPayment(
+    tx: TenantTx,
+    subscription: typeof subscriptions.$inferSelect,
+    plan: typeof plans.$inferSelect,
+    now: Date,
+  ): Promise<void> {
+    const [invoice] = await tx
+      .insert(subscriptionInvoices)
+      .values({
+        tenantId: subscription.tenantId,
+        subscriptionId: subscription.id,
+        number: `INV-${now.getUTCFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`,
+        status: 'draft',
+        amount: plan.amount,
+        currency: plan.currency,
+        periodStart: subscription.currentPeriodEnd,
+        periodEnd: nextPeriodEnd(subscription.currentPeriodEnd, plan.interval),
+      })
+      .onConflictDoNothing()
+      .returning();
+
+    if (!invoice) return; // already requested for this period
+
+    const result = await this.billing.charge({
+      tenantId: subscription.tenantId,
+      externalId: invoice.id,
+      amount: plan.amount,
+      currency: plan.currency,
+      description: `${plan.name} — ${invoice.periodStart.toISOString().slice(0, 10)}`,
+      phoneNumber: subscription.billingPhone ?? undefined,
+      email: subscription.billingEmail ?? undefined,
+    });
+
+    if (result.outcome === 'failed') {
+      await tx
+        .update(subscriptionInvoices)
+        .set({ status: 'failed', failureReason: result.reason, attempts: 1, lastAttemptAt: now })
+        .where(eq(subscriptionInvoices.id, invoice.id));
+      return;
+    }
+
+    await tx
+      .update(subscriptionInvoices)
+      .set({
+        status: result.outcome === 'paid' ? 'paid' : 'awaiting_payment',
+        paymentReference: result.reference,
+        paidAt: result.outcome === 'paid' ? now : null,
+        attempts: 1,
+        lastAttemptAt: now,
+      })
+      .where(eq(subscriptionInvoices.id, invoice.id));
+
+    if (result.outcome === 'paid') {
+      await this.markPaid(tx, subscription, plan);
+      return;
+    }
+
+    // Waiting on the customer. Announce it, with the link if there is one — a
+    // USSD prompt they missed is otherwise invisible.
+    //
+    // An EVENT, not a mail call: this runs inside the transaction that recorded
+    // the charge, so the notification cannot be lost if the process dies here,
+    // and cannot be sent if the transaction rolls back.
+    const base = await this.payloadFor(tx, subscription, plan);
+    await this.outbox.publish(tx, InvoiceIssued, {
+      aggregateId: invoice.id,
+      tenantId: subscription.tenantId,
+      payload: {
+        ...base,
+        invoiceId: invoice.id,
+        number: invoice.number,
+        dueDate: now.toISOString().slice(0, 10),
+        payUrl: result.paymentUrl,
+      },
+    });
+    await this.outbox.publish(tx, SubscriptionPaymentRequested, {
+      aggregateId: subscription.id,
+      tenantId: subscription.tenantId,
+      payload: {
+        ...base,
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.number,
+        dueDate: now.toISOString().slice(0, 10),
+        attempt: 1,
+        daysUntilSuspension: GRACE_DAYS,
+        payUrl: result.paymentUrl,
+      },
+    });
+  }
+
+  /**
+   * The fields every billing event carries.
+   *
+   * The tenant NAME is read here rather than left for the consumer to look up:
+   * once notifications live in their own service, a lookup means a synchronous
+   * call into identity on every message, and a broker outage takes the mail with
+   * it. See the note on personal data in `packages/events/src/billing.ts`.
+   */
+  async payloadFor(
+    tx: TenantTx,
+    subscription: typeof subscriptions.$inferSelect,
+    plan: { name: string; amount: string; currency: string },
+  ) {
+    const [tenant] = await tx
+      .select({ name: tenants.name })
+      .from(tenants)
+      .where(eq(tenants.id, subscription.tenantId))
+      .limit(1);
+    return {
+      subscriptionId: subscription.id,
+      planName: plan.name,
+      amount: plan.amount,
+      currency: plan.currency,
+      tenantName: tenant?.name ?? subscription.tenantId,
+      billingEmail: subscription.billingEmail,
+    };
+  }
+
+  private async markPaid(
+    tx: TenantTx,
+    subscription: typeof subscriptions.$inferSelect,
+    plan: typeof plans.$inferSelect,
+  ): Promise<void> {
+    const start = subscription.currentPeriodEnd;
+    await tx
+      .update(subscriptions)
+      .set({
+        status: 'active',
+        currentPeriodStart: start,
+        currentPeriodEnd: nextPeriodEnd(start, plan.interval),
+        graceUntil: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(subscriptions.id, subscription.id));
+  }
+
+  /**
+   * A payment provider confirmed an invoice. Called from the KPay webhook.
+   *
+   * Idempotent: only an invoice that is still awaiting payment moves, so a
+   * redelivered webhook extends the period once.
+   */
+  async settleInvoice(paymentReference: string, paid: boolean, reason?: string): Promise<boolean> {
+    const db = this.database.requireAdminDb();
+    const [invoice] = await db
+      .select()
+      .from(subscriptionInvoices)
+      .where(
+        and(
+          eq(subscriptionInvoices.paymentReference, paymentReference),
+          eq(subscriptionInvoices.status, 'awaiting_payment'),
+        ),
+      )
+      .limit(1);
+
+    if (!invoice) return false;
+
+    if (!paid) {
+      await db
+        .update(subscriptionInvoices)
+        .set({ status: 'failed', failureReason: reason ?? 'not approved' })
+        .where(eq(subscriptionInvoices.id, invoice.id));
+      return true;
+    }
+
+    await this.database.runInTenantContext(invoice.tenantId, async (tx) => {
+      await tx
+        .update(subscriptionInvoices)
+        .set({ status: 'paid', paidAt: new Date() })
+        .where(eq(subscriptionInvoices.id, invoice.id));
+
+      const [row] = await tx
+        .select({ subscription: subscriptions, plan: plans })
+        .from(subscriptions)
+        .innerJoin(plans, eq(plans.id, subscriptions.planId))
+        .where(eq(subscriptions.id, invoice.subscriptionId));
+
+      if (!row) return;
+      await this.markPaid(tx, row.subscription, row.plan);
+
+      // The receipt is sent off this event. Published in the same transaction
+      // as the period extension, so "we took your money" and "here is proof"
+      // cannot come apart.
+      await this.outbox.publish(tx, InvoicePaid, {
+        aggregateId: invoice.id,
+        tenantId: invoice.tenantId,
+        payload: {
+          ...(await this.payloadFor(tx, row.subscription, row.plan)),
+          invoiceId: invoice.id,
+          number: invoice.number,
+          paidAt: new Date().toISOString(),
+          paymentReference: paymentReference,
+        },
+      });
+    });
+
+    this.log.log(`invoice ${invoice.number} paid`);
+    return true;
+  }
+
+  /** Subscriptions due for renewal or overdue. Driven by the scheduled job. */
+  async dueForBilling(now = new Date()) {
+    const horizon = new Date(now.getTime() + RENEWAL_LEAD_DAYS * 86_400_000);
+    return this.database
+      .requireAdminDb()
+      .select({ subscription: subscriptions, plan: plans, tenantName: tenants.name })
+      .from(subscriptions)
+      .innerJoin(plans, eq(plans.id, subscriptions.planId))
+      .innerJoin(tenants, eq(tenants.id, subscriptions.tenantId))
+      .where(
+        and(
+          lte(subscriptions.currentPeriodEnd, horizon),
+          sql`${subscriptions.status} in ('active','trialing','pending_payment','past_due')`,
+        ),
+      );
+  }
+
+  static readonly GRACE_DAYS = GRACE_DAYS;
+  static readonly stepFor = stepFor;
+}

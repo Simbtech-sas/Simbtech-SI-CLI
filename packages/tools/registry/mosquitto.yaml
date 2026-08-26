@@ -1,0 +1,28 @@
+id: mosquitto
+name: Eclipse Mosquitto
+category: iot
+summary: Lightweight MQTT broker for device telemetry
+repo: https://github.com/eclipse-mosquitto/mosquitto
+license: EPL-2.0
+flavors: [sisaas, simice, platform]
+
+deps:
+  server:
+    - "mqtt"
+
+env:
+  - key: MQTT_URL
+    value: "mqtt://localhost:1883"
+  - key: MQTT_USERNAME
+  - key: MQTT_PASSWORD
+
+compose: compose.yml
+
+deploy:
+  image: eclipse-mosquitto:2
+  port: 1883
+  storage: 5Gi
+
+notes:
+  - Default config allows anonymous connections. Add a password file and per-tenant topic ACLs before exposing it.
+  - "Namespace topics as `<tenantId>/device/...` and enforce it in the ACL, not in application code."

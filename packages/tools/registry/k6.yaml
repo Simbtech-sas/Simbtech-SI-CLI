@@ -1,0 +1,24 @@
+id: k6
+name: Grafana k6
+category: observability
+summary: Load testing as code — scripts in JavaScript, thresholds that fail CI
+repo: https://github.com/grafana/k6
+license: AGPL-3.0
+
+flavors: [sisaas, platform]
+
+env:
+  - key: K6_BASE_URL
+    value: http://localhost:8080
+    comment: Target for the load test
+
+files:
+  - src: smoke.js.hbs
+    dest: ../../load/smoke.js
+  - src: README.md.hbs
+    dest: ../../load/README.md
+
+notes:
+  - "Run against staging, never production, and never against infrastructure you do not own."
+  - "Thresholds make a load test a pass/fail gate rather than a graph nobody reads — the generated script sets them."
+  - "Load-test with a tenant context: RLS adds a per-query filter, and a test that skips auth measures the wrong thing."

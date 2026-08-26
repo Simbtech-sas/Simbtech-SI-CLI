@@ -1,0 +1,78 @@
+-- On-premise installs that sync with this cloud instance.
+--
+-- One row per install, not per tenant: two sites belonging to one customer are
+-- two installs with two keys, and revoking one must not break the other.
+CREATE TABLE "sync_installs" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"label" text NOT NULL,
+	-- Hashed, like every other credential.
+	"key_hash" text NOT NULL UNIQUE,
+	"cursor" bigint DEFAULT 0 NOT NULL,
+
+	-- ── Schedule, set per install ───────────────────────────────────────────
+	-- NULL means manual only: the install syncs when a person asks it to.
+	"interval_seconds" integer,
+	-- Optional window, in the install's own timezone. A site on a metered or
+	-- shared link syncs at night; one on fibre syncs all day. Both are correct,
+	-- which is why this is a setting and not a constant.
+	"window_start" time,
+	"window_end" time,
+	"timezone" text DEFAULT 'UTC' NOT NULL,
+
+	"last_seen_at" timestamp with time zone,
+	"last_push_at" timestamp with time zone,
+	"revoked_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+
+	-- An interval below a minute is polling, not syncing, and will melt a link.
+	CONSTRAINT "sync_interval_sane" CHECK ("interval_seconds" IS NULL OR "interval_seconds" >= 60)
+);--> statement-breakpoint
+CREATE INDEX "sync_installs_tenant_idx" ON "sync_installs" ("tenant_id");--> statement-breakpoint
+
+-- Every syncable change, in one ordered stream.
+--
+-- `version` is what makes reconciliation possible: it is the record's version
+-- AFTER this change. A client pushes the version it last saw, and a mismatch
+-- means someone else edited in between.
+CREATE TABLE "sync_changes" (
+	"seq" bigserial PRIMARY KEY NOT NULL,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"entity" text NOT NULL,
+	"entity_id" text NOT NULL,
+	"operation" text NOT NULL,
+	"payload" jsonb,
+	"version" integer DEFAULT 1 NOT NULL,
+	"origin_install_id" uuid REFERENCES "sync_installs"("id") ON DELETE SET NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+CREATE INDEX "sync_changes_cursor_idx" ON "sync_changes" ("tenant_id", "seq");--> statement-breakpoint
+-- The current version of each record, for the optimistic check on push.
+CREATE UNIQUE INDEX "sync_changes_head_idx"
+  ON "sync_changes" ("tenant_id", "entity", "entity_id", "version");--> statement-breakpoint
+
+-- Conflicts that a policy chose not to resolve on its own.
+--
+-- This table is the difference between reconciliation and silent data loss: when
+-- two sites edited the same record offline, SOMETHING has to be discarded, and
+-- for anything a person cares about that decision belongs to a person.
+CREATE TABLE "sync_conflicts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"install_id" uuid NOT NULL REFERENCES "sync_installs"("id") ON DELETE CASCADE,
+	"entity" text NOT NULL,
+	"entity_id" text NOT NULL,
+	-- Both sides are kept whole. Whichever a human picks, the other is still
+	-- readable — a conflict record that stores only the loser's summary is a
+	-- record you cannot actually act on.
+	"local_payload" jsonb NOT NULL,
+	"remote_payload" jsonb NOT NULL,
+	"base_version" integer NOT NULL,
+	"remote_version" integer NOT NULL,
+	"detected_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"resolved_at" timestamp with time zone,
+	"resolution" text,
+	"resolved_by" uuid
+);--> statement-breakpoint
+CREATE INDEX "sync_conflicts_open_idx"
+  ON "sync_conflicts" ("tenant_id", "detected_at") WHERE "resolved_at" IS NULL;

@@ -1,0 +1,63 @@
+import {
+  Controller,
+  HttpCode,
+  Logger,
+  NotFoundException,
+  Param,
+  Post,
+  Req,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
+import { WebhookInbox } from '../application/webhook-inbox.service';
+
+type RawBodyRequest = FastifyRequest & { rawBody?: Buffer };
+
+/**
+ * `POST /webhooks/:source` — one route for every imported tool.
+ *
+ * Unauthenticated by design: the caller is Medusa or Documenso, not a user. The
+ * per-source signature is the only access control, which is why an unconfigured
+ * secret returns 503 rather than accepting the delivery.
+ */
+@Controller('webhooks')
+export class WebhookController {
+  private readonly log = new Logger(WebhookController.name);
+
+  constructor(private readonly inbox: WebhookInbox) {}
+
+  @Post(':source')
+  @HttpCode(200)
+  async receive(@Param('source') source: string, @Req() req: RawBodyRequest) {
+    const raw = req.rawBody;
+    if (!raw) {
+      // Fastify must be created with `rawBody: true`. Without the exact bytes
+      // there is nothing trustworthy to verify.
+      this.log.error('no raw body available — cannot verify the webhook signature');
+      throw new UnauthorizedException('signature cannot be verified');
+    }
+
+    const result = await this.inbox.receive(source, raw, req.headers as Record<string, unknown>);
+
+    switch (result.outcome) {
+      case 'accepted':
+      // A duplicate is a SUCCESS: answering 200 stops the sender retrying
+      // something we have already handled.
+      case 'duplicate':
+        return { received: true };
+      case 'unknown-source':
+        throw new NotFoundException();
+      case 'not-configured':
+        // Distinct from a rejection on purpose: this one is our fault, and an
+        // operator reading 503 goes and sets the secret.
+        throw new ServiceUnavailableException(`${source} webhooks are not configured`);
+      case 'rejected':
+        throw new UnauthorizedException('invalid signature');
+      default: {
+        const never: never = result;
+        throw new Error(`unhandled inbox outcome ${JSON.stringify(never)}`);
+      }
+    }
+  }
+}

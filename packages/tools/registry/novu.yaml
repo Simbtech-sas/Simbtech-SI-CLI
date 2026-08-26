@@ -1,0 +1,21 @@
+id: novu
+name: Novu
+category: email
+summary: Notification infrastructure — email, SMS, push and in-app from one API
+repo: https://github.com/novuhq/novu
+license: Apache-2.0
+flavors: [sisaas, sibile-rn, platform]
+
+deps:
+  server:
+    - "@novu/api"
+
+env:
+  - key: NOVU_API_URL
+    value: "http://localhost:3020"
+  - key: NOVU_SECRET_KEY
+    comment: From the Novu dashboard
+
+notes:
+  - Self-hosting Novu is a multi-service deployment (API, worker, MongoDB, Redis) — use its own docker-compose, not this stack.
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `novu` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

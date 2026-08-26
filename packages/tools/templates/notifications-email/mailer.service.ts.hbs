@@ -1,0 +1,93 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import type { Queue } from 'bullmq';
+import { AppConfigService } from '../../../config/app-config.service';
+import { renderTemplate, type EmailTemplate, type TemplateData } from '../domain/templates';
+import type { InvoiceDocument } from '../domain/documents';
+import { PdfService } from './pdf.service';
+
+export const EMAIL_QUEUE = 'email';
+
+/**
+ * Base64 rather than a Buffer: the job goes through Redis as JSON, and a Buffer
+ * arrives on the other side as `{ type: 'Buffer', data: [...] }` — three bytes
+ * of JSON per byte of file.
+ *
+ * ponytail: fine for an invoice PDF (tens of KB). Anything approaching a
+ * megabyte belongs in object storage with a link in the mail, not in a queue.
+ */
+export interface EmailAttachment {
+  filename: string;
+  contentBase64: string;
+  contentType: string;
+}
+
+export interface EmailJob<T extends EmailTemplate = EmailTemplate> {
+  to: string;
+  template: T;
+  data: TemplateData<T>;
+  attachments?: EmailAttachment[];
+  /** Null for platform mail. Carried through so the worker can scope its logging. */
+  tenantId?: string | null;
+}
+
+/**
+ * Queues transactional email. It does not send.
+ *
+ * Sending inline means an SMTP timeout inside a request turns a successful
+ * signup into a 500 — the account exists, the user sees a failure, and they try
+ * again. Queuing separates "the thing happened" from "we told them about it",
+ * which are allowed to fail independently.
+ */
+@Injectable()
+export class MailerService {
+  private readonly log = new Logger(MailerService.name);
+
+  constructor(
+    @InjectQueue(EMAIL_QUEUE) private readonly queue: Queue,
+    private readonly config: AppConfigService,
+    private readonly pdf: PdfService,
+  ) {}
+
+  async send<T extends EmailTemplate>(job: EmailJob<T>): Promise<void> {
+    if (!this.config.smtp) {
+      // Unconfigured is a valid state in development. Log the intent rather than
+      // failing the request that triggered it.
+      this.log.warn(`SMTP not configured — would have sent "${job.template}" to ${job.to}`);
+      return;
+    }
+    await this.queue.add(job.template, job, {
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 5_000 },
+      removeOnComplete: 1_000,
+      removeOnFail: 5_000,
+    });
+  }
+
+  /**
+   * Send a mail with an invoice or receipt attached.
+   *
+   * The document is rendered HERE, before queueing, so a rendering failure
+   * surfaces at the call site with the data that caused it — not three retries
+   * later in a worker log. `PdfService` already degrades to HTML rather than
+   * throwing, so the mail goes out either way.
+   */
+  async sendDocument<T extends EmailTemplate>(job: EmailJob<T>, document: InvoiceDocument): Promise<void> {
+    const rendered = await this.pdf.render(document);
+    await this.send({
+      ...job,
+      attachments: [
+        {
+          filename: rendered.filename,
+          contentBase64: rendered.content.toString('base64'),
+          contentType: rendered.contentType,
+        },
+      ],
+    });
+  }
+
+  /** Rendered here so a template error surfaces in tests, not in the worker. */
+  preview<T extends EmailTemplate>(template: T, data: TemplateData<T>) {
+    return renderTemplate(template, data);
+  }
+}

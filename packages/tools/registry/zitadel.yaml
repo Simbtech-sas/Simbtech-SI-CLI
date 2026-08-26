@@ -1,0 +1,22 @@
+id: zitadel
+name: ZITADEL
+category: auth
+summary: Multi-tenant-native identity provider — organisations are first class
+repo: https://github.com/zitadel/zitadel
+license: Apache-2.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "@zitadel/node"
+
+env:
+  - key: ZITADEL_ISSUER
+    value: "http://localhost:8080"
+  - key: ZITADEL_CLIENT_ID
+  - key: ZITADEL_CLIENT_SECRET
+
+notes:
+  - Its organisation model maps onto tenants directly, which is why the reference platform picked it over Keycloak.
+  - Needs its own Postgres; deploy via the Helm chart rather than compose.
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `zitadel` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

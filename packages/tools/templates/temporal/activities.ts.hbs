@@ -1,0 +1,75 @@
+import type { Logger } from '@nestjs/common';
+import { TenantActivated, TenantOnboardingAbandoned } from '@{{brand}}/events';
+import type { DatabaseService } from '../../../database/database.service';
+import type { OutboxService } from '../../events/application/outbox.service';
+
+/**
+ * What a workflow is allowed to actually DO.
+ *
+ * Workflow code is replayed from history on every worker restart, so it must be
+ * deterministic: no clock, no randomness, no I/O. Everything that touches the
+ * outside world lives here, in activities, which Temporal records the result of
+ * and never replays.
+ *
+ * Activities are plain functions, built from Nest's providers by
+ * `createActivities` — so they get the same DatabaseService and OutboxService as
+ * the rest of the app rather than a second set of connections.
+ */
+export interface ActivityDeps {
+  database: DatabaseService;
+  outbox: OutboxService;
+  log: Logger;
+}
+
+export interface OnboardingContext {
+  tenantId: string;
+  tenantName: string;
+  workflowId: string;
+}
+
+export function createActivities(deps: ActivityDeps) {
+  return {
+    /**
+     * How a workflow announces something: through the OUTBOX, never a direct
+     * produce.
+     *
+     * Temporal already guarantees this activity runs to completion, and the
+     * outbox guarantees the row reaches Kafka. Producing straight to Kafka here
+     * would give neither — a broker outage would fail the activity and Temporal
+     * would retry it, publishing twice once the broker came back.
+     */
+    async publishTenantActivated(context: OnboardingContext): Promise<void> {
+      await deps.database.runInTenantContext(context.tenantId, async (tx) => {
+        await deps.outbox.publish(tx, TenantActivated, {
+          aggregateId: context.tenantId,
+          tenantId: context.tenantId,
+          payload: {
+            workflowId: context.workflowId,
+            tenantId: context.tenantId,
+            tenantName: context.tenantName,
+            activatedAt: new Date().toISOString(),
+          },
+        });
+      });
+      deps.log.log(`tenant ${context.tenantId} activated`);
+    },
+
+    async publishOnboardingAbandoned(context: OnboardingContext, lastStep: string): Promise<void> {
+      await deps.database.runInTenantContext(context.tenantId, async (tx) => {
+        await deps.outbox.publish(tx, TenantOnboardingAbandoned, {
+          aggregateId: context.tenantId,
+          tenantId: context.tenantId,
+          payload: {
+            workflowId: context.workflowId,
+            tenantId: context.tenantId,
+            lastStep,
+            abandonedAt: new Date().toISOString(),
+          },
+        });
+      });
+      deps.log.warn(`tenant ${context.tenantId} abandoned onboarding at ${lastStep}`);
+    },
+  };
+}
+
+export type Activities = ReturnType<typeof createActivities>;

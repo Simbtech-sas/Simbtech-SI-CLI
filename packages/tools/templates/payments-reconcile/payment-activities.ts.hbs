@@ -1,0 +1,83 @@
+import type { Logger } from '@nestjs/common';
+import type { DatabaseService } from '../../../database/database.service';
+import type { PaymentRegistry } from '../../payments/application/payment-registry';
+import type { PaymentPublisher } from '../../payments/application/payment-publisher';
+import type { PaymentState } from '../../payments/domain/payment-provider.port';
+
+export interface PaymentActivityDeps {
+  database: DatabaseService;
+  registry: PaymentRegistry;
+  publisher: PaymentPublisher;
+  log: Logger;
+}
+
+export interface PaymentRef {
+  provider: string;
+  reference: string;
+  externalId?: string;
+  tenantId: string;
+  amount: string;
+  currency: string;
+}
+
+export function createPaymentActivities(deps: PaymentActivityDeps) {
+  return {
+    /**
+     * Ask the provider what actually happened.
+     *
+     * This is the whole point of the workflow. A Mobile Money webhook is a
+     * best-effort HTTP call from someone else's network; when one is lost the
+     * money still moved, and nothing in the system would ever find out.
+     *
+     * Provider-agnostic by construction — a switch on provider name here would
+     * mean a third provider requires editing a workflow.
+     */
+    async pollPaymentStatus(payment: PaymentRef): Promise<PaymentState> {
+      const provider = deps.registry.byId(payment.provider);
+      const snapshot = await provider.get(payment.reference);
+      return snapshot.state;
+    },
+
+    /**
+     * Record an outcome the poll found, and announce it.
+     *
+     * Returns false when the row had already moved — the webhook arrived first,
+     * or an earlier poll won. Both are ordinary; both must be a no-op, or a
+     * customer is charged once and fulfilled twice.
+     */
+    async applyPolledOutcome(
+      payment: PaymentRef,
+      state: 'settled' | 'failed' | 'cancelled',
+      afterSeconds: number,
+    ): Promise<boolean> {
+      const event = {
+        provider: payment.provider,
+        reference: payment.reference,
+        externalId: payment.externalId,
+        state,
+        amount: payment.amount,
+        currency: payment.currency,
+        occurredAt: new Date().toISOString(),
+      } as const;
+
+      // The provider's own records first. If that returns false the outcome was
+      // already applied, and re-announcing it would settle an invoice twice.
+      const applied = await deps.registry.applyTerminal(event);
+      if (!applied) {
+        deps.log.log(`${payment.reference} was already resolved — poll changed nothing`);
+        return false;
+      }
+
+      await deps.database.runInTenantContext(payment.tenantId, async (tx) => {
+        await deps.publisher.publishReconciled(tx, event, payment.tenantId, afterSeconds);
+      });
+      // Worth a warning, not a log line: this is a webhook that never arrived.
+      deps.log.warn(
+        `${payment.reference} resolved by POLLING after ${afterSeconds}s — its webhook never arrived`,
+      );
+      return true;
+    },
+  };
+}
+
+export type PaymentActivities = ReturnType<typeof createPaymentActivities>;

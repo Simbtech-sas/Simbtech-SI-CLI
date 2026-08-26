@@ -1,0 +1,17 @@
+import { Module } from '@nestjs/common';
+import { MediaModule } from '../media/media.module';
+import { SyncService } from './application/sync.service';
+import { SyncController } from './interface/sync.controller';
+import { SyncKeyGuard } from './interface/sync-key.guard';
+
+/**
+ * Requires MediaModule for the storage port — file sync moves bytes by presigned
+ * URL, so it needs whatever storage adapter the project chose.
+ */
+@Module({
+  imports: [MediaModule],
+  controllers: [SyncController],
+  providers: [SyncService, SyncKeyGuard],
+  exports: [SyncService],
+})
+export class SyncModule {}

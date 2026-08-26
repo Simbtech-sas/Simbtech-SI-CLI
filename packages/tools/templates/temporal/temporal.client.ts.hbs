@@ -1,0 +1,106 @@
+import { Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
+import { Client, Connection, WorkflowIdReusePolicy } from '@temporalio/client';
+import { WorkflowExecutionAlreadyStartedError } from '@temporalio/common';
+import { AppConfigService } from '../../../config/app-config.service';
+
+/**
+ * The connection to Temporal, and the workflow-id convention.
+ *
+ * **Kafka and Temporal are not alternatives.** Kafka is fanout — "this
+ * happened", many listeners, no ordering between them. Temporal is
+ * orchestration — one process, many steps, over days, with durable timers and
+ * retries that survive a deploy. They meet at exactly two seams:
+ *
+ *   event ──▶ startIdempotent()          (an event begins or advances a process)
+ *   workflow ──▶ publishEvent activity   (a process announces what it did)
+ *
+ * Anything else couples them badly. A workflow that produces to Kafka directly
+ * loses the transactional outbox guarantee; a consumer that does multi-step work
+ * inline reinvents Temporal, badly, without the timers.
+ */
+@Injectable()
+export class TemporalClient implements OnModuleDestroy {
+  private readonly log = new Logger(TemporalClient.name);
+  private connection?: Connection;
+  private client?: Client;
+
+  constructor(private readonly config: AppConfigService) {}
+
+  /**
+   * The workflow id IS the idempotency key.
+   *
+   * `<tenantId>:<workflow>:<key>` — one namespace shared by every tenant, with
+   * the tenant in the id. A namespace per tenant is possible and is how people
+   * discover that namespaces are a heavyweight, operator-managed object.
+   */
+  static workflowId(tenantId: string | null, workflow: string, key: string): string {
+    return `${tenantId ?? 'platform'}:${workflow}:${key}`;
+  }
+
+  async connect(): Promise<Client> {
+    if (this.client) return this.client;
+    const settings = this.config.temporal;
+    if (!settings) throw new Error('TEMPORAL_ADDRESS is not configured');
+
+    this.connection = await Connection.connect({ address: settings.address });
+    this.client = new Client({ connection: this.connection, namespace: settings.namespace });
+    this.log.log(`connected to Temporal at ${settings.address} (${settings.namespace})`);
+    return this.client;
+  }
+
+  /**
+   * Start a workflow, or do nothing if it is already running.
+   *
+   * This is what makes an at-least-once event safe to act on. Kafka WILL deliver
+   * the same message twice; without this, the second delivery starts a second
+   * onboarding for the same tenant — two welcome emails and two timers.
+   *
+   * `RejectDuplicate` on purpose: the default policy would happily start a new
+   * run once the first one closed, which turns a redelivered week-old event into
+   * a fresh seven-day process.
+   */
+  async startIdempotent<T>(
+    workflowType: string,
+    options: { workflowId: string; taskQueue?: string; args: T[]; searchAttributes?: Record<string, unknown> },
+  ): Promise<{ started: boolean; workflowId: string }> {
+    const client = await this.connect();
+    try {
+      await client.workflow.start(workflowType, {
+        workflowId: options.workflowId,
+        taskQueue: options.taskQueue ?? this.config.temporal!.taskQueue,
+        args: options.args,
+        workflowIdReusePolicy: WorkflowIdReusePolicy.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE,
+      });
+      return { started: true, workflowId: options.workflowId };
+    } catch (err) {
+      if (err instanceof WorkflowExecutionAlreadyStartedError) {
+        // Not an error. This is the redelivery working exactly as intended.
+        this.log.log(`${options.workflowId} is already running — ignoring the duplicate`);
+        return { started: false, workflowId: options.workflowId };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Send a signal to a running workflow, tolerating one that has already gone.
+   *
+   * A signal for a finished workflow is normal — the customer verified their
+   * email a minute after the timer expired — and it must not crash the consumer
+   * or the event will redeliver forever.
+   */
+  async signal(workflowId: string, signalName: string, ...args: unknown[]): Promise<boolean> {
+    const client = await this.connect();
+    try {
+      await client.workflow.getHandle(workflowId).signal(signalName, ...args);
+      return true;
+    } catch (err) {
+      this.log.warn(`could not signal ${workflowId}: ${(err as Error).message}`);
+      return false;
+    }
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.connection?.close();
+  }
+}

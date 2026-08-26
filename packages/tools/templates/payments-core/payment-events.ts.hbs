@@ -1,0 +1,101 @@
+import { z } from 'zod';
+import { defineEvent, type EventContract } from './contract.ts';
+
+/**
+ * What a payment announces to the rest of the system.
+ *
+ * Provider-agnostic on purpose. A consumer reacting to money arriving must not
+ * care whether it came through KPay or JoonaPay — that is the difference between
+ * one handler and one handler per provider, forever.
+ *
+ * `provider` is on the payload for audit and reconciliation, not for branching.
+ * If a consumer switches on it, the wrong thing is in the wrong place.
+ */
+const paymentPayload = z.object({
+  provider: z.string(),
+  /** The provider's reference. Unique per provider, not globally. */
+  reference: z.string(),
+  /** Our id — an order id, an invoice id. This is what consumers join on. */
+  externalId: z.string().optional(),
+  /** Decimal string in major units. Never a float, on the wire or anywhere else. */
+  amount: z.string(),
+  currency: z.string().length(3),
+  method: z.enum(['mobile-money', 'card', 'paypal', 'bank']).optional(),
+  occurredAt: z.string().datetime({ offset: true }),
+});
+
+export const PaymentSettled = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'payment',
+  type: 'PaymentSettled',
+  version: 1,
+  schema: paymentPayload,
+});
+
+export const PaymentFailed = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'payment',
+  type: 'PaymentFailed',
+  version: 1,
+  schema: paymentPayload.extend({ reason: z.string().nullable().optional() }),
+});
+
+/**
+ * A payment the customer walked away from. Distinct from a failure: nothing
+ * went wrong, so nothing should be retried and nobody should be chased.
+ */
+export const PaymentCancelled = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'payment',
+  type: 'PaymentCancelled',
+  version: 1,
+  schema: paymentPayload.extend({ reason: z.string().nullable().optional() }),
+});
+
+/**
+ * A payment was asked for and the customer has not acted yet.
+ *
+ * Published in the transaction that records the payment, so something durable
+ * knows a payment is outstanding the moment it exists. Without this, a payment
+ * whose webhook never arrives is invisible: nothing is waiting for it, and the
+ * only trace is a row that stays `pending` until dunning suspends a customer
+ * who actually paid.
+ */
+export const PaymentRequested = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'payment',
+  type: 'PaymentRequested',
+  version: 1,
+  schema: paymentPayload.extend({
+    /** Present for a hosted checkout, absent for a USSD push. */
+    paymentUrl: z.string().url().optional(),
+  }),
+});
+
+/**
+ * A payment whose outcome we found by ASKING, because the webhook never came.
+ *
+ * Deliberately a separate event rather than a quiet PaymentSettled: every one of
+ * these is a webhook that was not delivered. A steady trickle is normal for
+ * Mobile Money; a spike means your endpoint is unreachable and nobody would
+ * otherwise notice, because the money still arrives.
+ */
+export const PaymentReconciled = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'payment',
+  type: 'PaymentReconciled',
+  version: 1,
+  schema: paymentPayload.extend({
+    state: z.enum(['settled', 'failed', 'cancelled']),
+    /** How long after the request the poll found it. Feeds the alert threshold. */
+    afterSeconds: z.number().int().min(0),
+  }),
+});
+
+export const PAYMENT_EVENTS = {
+  PaymentRequested,
+  PaymentReconciled,
+  PaymentSettled,
+  PaymentFailed,
+  PaymentCancelled,
+} as const satisfies Record<string, EventContract>;

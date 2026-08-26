@@ -1,0 +1,57 @@
+id: subscriptions
+kind: feature
+name: Subscriptions
+category: finance
+summary: Plans, trials, renewals and dunning — built for Mobile Money, where nothing auto-charges
+repo: https://github.com/SIMBTECH-SAS/boilerplates
+license: UNLICENSED
+flavors: [sisaas]
+requires: [notifications-email, payments-core]
+
+migrations:
+  - src: migration.sql.hbs
+    name: subscriptions
+
+files:
+  - src: schema.ts.hbs
+    dest: src/database/schema/subscriptions.ts
+  - src: billing-port.ts.hbs
+    dest: src/modules/subscriptions/domain/billing-port.ts
+  - src: dunning.ts.hbs
+    dest: src/modules/subscriptions/domain/dunning.ts
+  - src: dunning.spec.ts.hbs
+    dest: src/modules/subscriptions/domain/dunning.spec.ts
+  - src: subscriptions.service.ts.hbs
+    dest: src/modules/subscriptions/application/subscriptions.service.ts
+  - src: billing-events.ts.hbs
+    dest: root:packages/events/src/billing.ts
+  - src: billing.event-handlers.ts.hbs
+    dest: src/modules/subscriptions/application/billing.event-handlers.ts
+  - src: billing.processor.ts.hbs
+    dest: src/modules/subscriptions/application/billing.processor.ts
+  - src: provider-billing.adapter.ts.hbs
+    dest: src/modules/subscriptions/infrastructure/provider-billing.adapter.ts
+  - src: subscriptions.controller.ts.hbs
+    dest: src/modules/subscriptions/interface/subscriptions.controller.ts
+  - src: subscriptions.module.ts.hbs
+    dest: src/modules/subscriptions/subscriptions.module.ts
+
+register:
+  - anchor: events
+    snippet: "...BILLING_EVENTS,"
+    import: "import { BILLING_EVENTS } from './billing.ts';\nexport * from './billing.ts';"
+  - anchor: schema
+    snippet: "export * from './subscriptions';"
+  - anchor: modules
+    snippet: SubscriptionsModule,
+    import: "import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';"
+  - anchor: workerModules
+    snippet: SubscriptionsModule,
+    import: "import { SubscriptionsModule } from './modules/subscriptions/subscriptions.module';"
+
+notes:
+  - "Built for the constraint that Mobile Money CANNOT auto-charge: there is no card on file, so every renewal is a request the customer approves on their phone. That is why `pending_payment` is a state and the grace period is a week, not an hour."
+  - "Billing is bound to BILLING_PORT — KPay today, a card processor later, without the lifecycle code changing. What the port cannot hide is `capabilities.autoCharge`; the engine reads it rather than pretending."
+  - "Suspension cuts ACCESS and keeps DATA. Deleting on non-payment turns a billing problem into a support catastrophe, and people do come back and pay."
+  - "Cancellation takes effect at period end. The customer paid for this period; cutting access immediately is charging for time they never get."
+  - "Prefer Lago or Kill Bill if billing IS the product — usage metering, proration and complex entitlements are theirs, not this. `si add lago` or `si add killbill`."

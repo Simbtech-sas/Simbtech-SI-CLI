@@ -1,0 +1,49 @@
+import { Body, Controller, HttpCode, Post, Req, UseGuards } from '@nestjs/common';
+import { createZodDto } from 'nestjs-zod';
+import { z } from 'zod';
+import type { FastifyRequest } from 'fastify';
+import { LoginThrottleGuard } from '../../security/interface/login-throttle.guard';
+import { PasswordResetService } from '../application/password-reset.service';
+
+class RequestResetDto extends createZodDto(z.object({ email: z.string().email() })) {}
+
+class ConfirmResetDto extends createZodDto(
+  z.object({
+    token: z.string().min(20),
+    // Length is the control that matters. Composition rules push people toward
+    // "Password1!" and are no longer recommended by NIST.
+    password: z.string().min(12).max(256),
+  }),
+) {}
+
+@Controller('auth/password')
+// Same throttle as login: this endpoint sends email and is otherwise an
+// unauthenticated way to make your server do work for a stranger.
+@UseGuards(LoginThrottleGuard)
+export class PasswordResetController {
+  constructor(private readonly reset: PasswordResetService) {}
+
+  /**
+   * Always 202, always the same body.
+   *
+   * Returning 404 for an unknown address turns this into a membership oracle:
+   * feed it an email list and learn who has an account. The user is told to
+   * check their inbox either way.
+   */
+  @Post('forgot')
+  @HttpCode(202)
+  async forgot(@Body() dto: RequestResetDto, @Req() req: FastifyRequest) {
+    await this.reset.request(dto.email, req.ip);
+    return { message: 'If that address has an account, a reset link is on its way.' };
+  }
+
+  /** Also uniform: an invalid, expired and already-used token look identical. */
+  @Post('reset')
+  @HttpCode(200)
+  async confirm(@Body() dto: ConfirmResetDto) {
+    const ok = await this.reset.reset(dto.token, dto.password);
+    return ok
+      ? { message: 'Password updated. Sign in with your new password.' }
+      : { message: 'That link is invalid or has expired. Request a new one.' };
+  }
+}

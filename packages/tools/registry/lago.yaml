@@ -1,0 +1,23 @@
+id: lago
+name: Lago
+category: finance
+summary: Usage-based and subscription billing — metering, plans, invoices, coupons
+repo: https://github.com/getlago/lago
+license: AGPL-3.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "@getlago/lago-javascript-client"
+
+env:
+  - key: LAGO_API_URL
+    value: http://localhost:3000
+  - key: LAGO_API_KEY
+    comment: From the Lago dashboard
+
+notes:
+  - "Best when billing is USAGE-based — metered events, tiered pricing, credits. For flat monthly plans it is a lot of service to operate."
+  - "Self-hosting needs Postgres, Redis, Clickhouse and worker processes. Use the upstream docker-compose, not this stack."
+  - "It integrates Stripe, GoCardless and Adyen — NOT KPay. With Mobile Money you would drive the charge yourself and report the result to Lago."
+  - "AGPL-3.0: fine to self-host and use over its API; read the licence before redistributing Lago itself."

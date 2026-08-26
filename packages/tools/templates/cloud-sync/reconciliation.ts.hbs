@@ -1,0 +1,116 @@
+/**
+ * Conflict detection and resolution.
+ *
+ * ## How a conflict is detected
+ *
+ * Every record carries a `version`. A client pushes the version it last saw
+ * (`baseVersion`). If the server's current version is higher, someone else
+ * changed the record in between — that, and only that, is a conflict.
+ *
+ * Comparing timestamps instead would be wrong twice over: clocks on separate
+ * machines disagree, and two edits a second apart are still a conflict even
+ * though one is clearly later.
+ *
+ * ## How it is resolved
+ *
+ * Per entity, because the right answer differs per entity. There is no policy
+ * that is correct for both a price list and a doctor's note.
+ */
+export type ConflictPolicy =
+  /** The cloud is authoritative. The client's change is rejected and it converges. */
+  | 'remote-wins'
+  /** The install is authoritative — for data only that site can know. */
+  | 'local-wins'
+  /** Newest timestamp wins. Convenient, and it DISCARDS the loser silently. */
+  | 'last-write-wins'
+  /** Neither is applied; a person decides. The only honest choice for real records. */
+  | 'manual'
+  /** A supplied function combines both sides. Only where the type genuinely merges. */
+  | 'merge';
+
+export interface EntityPolicy {
+  policy: ConflictPolicy;
+  /** Required when policy is `merge`. */
+  merge?: (local: Record<string, unknown>, remote: Record<string, unknown>) => Record<string, unknown>;
+}
+
+/**
+ * Which policy applies to which entity.
+ *
+ * The default is `manual` on purpose. A silent default that discards a user's
+ * work is the kind of decision that should have to be made deliberately, in a
+ * diff someone reviews.
+ */
+export const DEFAULT_POLICY: EntityPolicy = { policy: 'manual' };
+
+export const ENTITY_POLICIES: Record<string, EntityPolicy> = {
+  // Reference data the cloud owns: a site's local edit is not authoritative.
+  tenants: { policy: 'remote-wins' },
+  price_lists: { policy: 'remote-wins' },
+
+  // Operational data only the site can know — a reading taken on the premises.
+  device_readings: { policy: 'local-wins' },
+
+  // Genuinely mergeable: a set union loses nothing.
+  // tags: {
+  //   policy: 'merge',
+  //   merge: (local, remote) => ({
+  //     ...remote,
+  //     tags: [...new Set([...(local.tags as string[]), ...(remote.tags as string[])])],
+  //   }),
+  // },
+};
+
+export function policyFor(entity: string): EntityPolicy {
+  return ENTITY_POLICIES[entity] ?? DEFAULT_POLICY;
+}
+
+export type Resolution =
+  | { action: 'apply'; payload: Record<string, unknown> }
+  | { action: 'reject'; remote: Record<string, unknown>; reason: string }
+  | { action: 'escalate'; reason: string };
+
+export interface ConflictInput {
+  entity: string;
+  local: Record<string, unknown>;
+  remote: Record<string, unknown>;
+  localUpdatedAt: string;
+  remoteUpdatedAt: string;
+}
+
+/** Apply the entity's policy to a detected conflict. */
+export function reconcile(input: ConflictInput): Resolution {
+  const { policy, merge } = policyFor(input.entity);
+
+  switch (policy) {
+    case 'remote-wins':
+      // Rejected, but the current remote record goes back with the response so
+      // the client can converge rather than retrying the same losing change.
+      return { action: 'reject', remote: input.remote, reason: 'the cloud record is authoritative' };
+
+    case 'local-wins':
+      return { action: 'apply', payload: input.local };
+
+    case 'last-write-wins': {
+      // Timestamps from two machines. Treat equality as remote-wins rather than
+      // letting clock skew decide — a tie should not be resolved by luck.
+      const localNewer = new Date(input.localUpdatedAt) > new Date(input.remoteUpdatedAt);
+      return localNewer
+        ? { action: 'apply', payload: input.local }
+        : { action: 'reject', remote: input.remote, reason: 'the cloud record is newer' };
+    }
+
+    case 'merge': {
+      if (!merge) {
+        // A merge policy with no merge function would silently fall back to
+        // discarding one side. Escalate instead.
+        return { action: 'escalate', reason: `entity "${input.entity}" has no merge function` };
+      }
+      return { action: 'apply', payload: merge(input.local, input.remote) };
+    }
+
+    case 'manual':
+    default:
+      return { action: 'escalate', reason: 'both sides changed; a person must choose' };
+  }
+}

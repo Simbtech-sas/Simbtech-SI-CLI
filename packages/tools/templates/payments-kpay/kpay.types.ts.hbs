@@ -1,0 +1,121 @@
+import type { KpayProviderCode } from './providers';
+
+// Re-exported so callers get the whole payment vocabulary from one module.
+export type { KpayProviderCode };
+
+/**
+ * Every way KPay will take money, as a discriminated union.
+ *
+ * The three shapes are NOT interchangeable, and KPay rejects a mix with a 400:
+ *
+ * - `ussd` — Mobile Money push straight to a phone. Requires `provider` and
+ *   `phoneNumber`, and must NOT carry `returnUrl`.
+ * - `gateway` — KPay hosts the page and the customer picks their own operator
+ *   and number. Requires `returnUrl`, and must NOT carry `provider`,
+ *   `phoneNumber` or `customerName`.
+ * - `card` / `paypal` — no phone push exists for these, so they always open the
+ *   hosted page. Passing one forces gateway mode even when the application is
+ *   configured for USSD; the merchant changes nothing.
+ *
+ * Modelling this as a union means the compiler rejects the invalid combinations
+ * rather than KPay rejecting them at runtime, in production, with money involved.
+ */
+export type PaymentMethod = 'mobile-money' | 'card' | 'paypal';
+
+interface BasePayment {
+  /** Decimal string in the provider's currency. Never a float. */
+  amount: string;
+  /** Your unique id. KPay returns 409 if one is already active. */
+  externalId: string;
+  description?: string;
+  customerEmail?: string;
+  metadata?: Record<string, unknown>;
+}
+
+/** Direct USSD push. Mobile Money only — no card or PayPal equivalent exists. */
+export interface UssdPayment extends BasePayment {
+  method: 'mobile-money';
+  mode: 'ussd';
+  provider: KpayProviderCode;
+  /** International format, no `+` and no leading zero. */
+  phoneNumber: string;
+  customerName?: string;
+}
+
+/** Hosted page; the customer chooses operator and number themselves. */
+export interface GatewayMobileMoneyPayment extends BasePayment {
+  method: 'mobile-money';
+  mode: 'gateway';
+  returnUrl: string;
+  cancelUrl?: string;
+  /**
+   * Optional hint used only to interpret the amount's decimals. It is NOT sent
+   * to KPay — doing so in gateway mode is a 400.
+   */
+  currencyProvider?: KpayProviderCode;
+}
+
+/** Card or PayPal. Always the hosted page. */
+export interface HostedPayment extends BasePayment {
+  method: 'card' | 'paypal';
+  returnUrl: string;
+  cancelUrl?: string;
+  currencyProvider?: KpayProviderCode;
+}
+
+export type PaymentRequest = UssdPayment | GatewayMobileMoneyPayment | HostedPayment;
+
+export type KpayStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'REFUNDED';
+
+/** Only these three end the story. Anything else is informational. */
+export const TERMINAL_STATUSES: readonly KpayStatus[] = ['COMPLETED', 'FAILED', 'CANCELLED'];
+
+export function isTerminal(status: string): boolean {
+  return (TERMINAL_STATUSES as readonly string[]).includes(status);
+}
+
+export interface KpayPaymentResponse {
+  id: string;
+  reference: string;
+  providerReference?: string | null;
+  status: KpayStatus;
+  amount: number;
+  netAmount?: number;
+  feeAmount?: number;
+  currency: string;
+  externalId: string;
+  provider?: string | null;
+  country?: string | null;
+  phoneNumber?: string;
+  isTest: boolean;
+  /** Present in gateway mode — send the customer here. */
+  mode?: 'GATEWAY';
+  gatewayUrl?: string;
+  expiresAt?: string;
+  metadata?: Record<string, unknown>;
+  completedAt?: string | null;
+  failureReason?: string | null;
+  message?: string;
+}
+
+export interface KpayWithdrawal extends KpayPaymentResponse {
+  /** Present only on a cross-currency payout. */
+  payoutCurrency?: string | null;
+  payoutAmount?: number | null;
+  exchangeRate?: number | null;
+}
+
+export interface KpayWebhookEvent {
+  event: string;
+  paymentId: string;
+  reference: string;
+  status: KpayStatus;
+  amount: number;
+  phoneNumber?: string;
+  externalId?: string;
+  metadata?: Record<string, unknown>;
+  completedAt?: string | null;
+  failedAt?: string | null;
+  failureReason?: string | null;
+  timestamp: string;
+}

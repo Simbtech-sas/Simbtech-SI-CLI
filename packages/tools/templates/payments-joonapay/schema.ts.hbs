@@ -1,0 +1,51 @@
+import { boolean, index, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { tenants } from './tenants';
+
+/**
+ * The port's vocabulary, not JoonaPay's. JoonaPay speaks two — lowercase over
+ * REST, uppercase over webhooks — and storing whichever arrived first is how a
+ * settled payment ends up in two different states depending on the path it took.
+ */
+export const joonapayStatus = pgEnum('joonapay_status', [
+  'pending',
+  'processing',
+  'settled',
+  'failed',
+  'cancelled',
+  'refunded',
+]);
+
+export const joonapayPayments = pgTable(
+  'joonapay_payments',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    /** JoonaPay's payment_request_uuid. Unique — this makes redelivery a no-op. */
+    joonapayUuid: text('joonapay_uuid').notNull().unique(),
+    /** JoonaPay's human reference, e.g. GGUWWIMRJHHF. */
+    reference: text('reference').notNull(),
+    /** Our id, sent as merchant_transaction_id. */
+    externalId: text('external_id').notNull(),
+    status: joonapayStatus('status').notNull().default('pending'),
+    amount: numeric('amount', { precision: 20, scale: 4 }).notNull(),
+    paidAmount: numeric('paid_amount', { precision: 20, scale: 4 }),
+    currency: text('currency').notNull(),
+    countryUuid: text('country_uuid'),
+    checkoutUrl: text('checkout_url'),
+    /** Settled with a pk_test_ key. Test money must never count as revenue. */
+    isTest: boolean('is_test').notNull().default(false),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    failureReason: text('failure_reason'),
+    settledAt: timestamp('settled_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('joonapay_tenant_external').on(t.tenantId, t.externalId),
+    index('joonapay_payments_tenant_idx').on(t.tenantId, t.createdAt),
+    index('joonapay_payments_reference_idx').on(t.reference),
+  ],
+);

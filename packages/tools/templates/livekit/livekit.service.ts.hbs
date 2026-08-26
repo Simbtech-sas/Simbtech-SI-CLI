@@ -1,0 +1,65 @@
+import { Injectable } from '@nestjs/common';
+import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
+import { AppConfigService } from '../../config/app-config.service';
+
+/**
+ * LiveKit rooms, scoped to a tenant.
+ *
+ * Room names are prefixed with the tenant id and the prefix is applied here, not
+ * by callers — a token is a bearer credential, so a caller that could pass a raw
+ * room name could join another tenant's call.
+ */
+@Injectable()
+export class LivekitService {
+  private readonly url: string;
+  private readonly apiKey: string;
+  private readonly apiSecret: string;
+
+  constructor(config: AppConfigService) {
+    this.url = process.env['LIVEKIT_URL'] ?? '';
+    this.apiKey = process.env['LIVEKIT_API_KEY'] ?? '';
+    this.apiSecret = process.env['LIVEKIT_API_SECRET'] ?? '';
+    void config;
+  }
+
+  private roomName(tenantId: string, room: string): string {
+    return `${tenantId}:${room}`;
+  }
+
+  /** A join token for one participant in one tenant's room. Expires in an hour. */
+  async createToken(input: {
+    tenantId: string;
+    room: string;
+    identity: string;
+    name?: string;
+    canPublish?: boolean;
+  }): Promise<string> {
+    const token = new AccessToken(this.apiKey, this.apiSecret, {
+      identity: input.identity,
+      name: input.name,
+      ttl: '1h',
+    });
+    token.addGrant({
+      room: this.roomName(input.tenantId, input.room),
+      roomJoin: true,
+      canPublish: input.canPublish ?? true,
+      canSubscribe: true,
+    });
+    return token.toJwt();
+  }
+
+  private get client(): RoomServiceClient {
+    // LiveKit's REST API is http(s), while clients connect over ws(s).
+    const httpUrl = this.url.replace(/^ws/, 'http');
+    return new RoomServiceClient(httpUrl, this.apiKey, this.apiSecret);
+  }
+
+  async listRooms(tenantId: string) {
+    const rooms = await this.client.listRooms();
+    return rooms.filter((r) => r.name.startsWith(`${tenantId}:`));
+  }
+
+  async deleteRoom(tenantId: string, room: string): Promise<void> {
+    await this.client.deleteRoom(this.roomName(tenantId, room));
+  }
+}

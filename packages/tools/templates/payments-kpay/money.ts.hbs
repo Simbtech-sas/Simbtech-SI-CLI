@@ -1,0 +1,55 @@
+import { providerFor } from './providers';
+
+/**
+ * Converting between our decimal-string money and KPay's numeric `amount`.
+ *
+ * Two representations that must not be confused:
+ *
+ * - **Ours** — a decimal STRING (`"1500"`, `"10.50"`). Never a float; that is the
+ *   rule the whole codebase follows for money.
+ * - **KPay's** — a JSON number in the provider's major unit, with as many decimal
+ *   places as that provider supports. XAF takes 0, so `1500` means 1500 francs.
+ *   M-Pesa takes 2, so `10.50` means ten shillings fifty.
+ *
+ * Getting the decimals wrong is a 100× error in whichever direction, which is
+ * why the conversion reads the provider table instead of assuming.
+ */
+
+const DECIMAL = /^-?\d+(\.\d+)?$/;
+
+/** Our decimal string -> KPay's number for that provider. */
+export function toKpayAmount(decimalAmount: string, providerCode: string): number {
+  if (!DECIMAL.test(decimalAmount.trim())) {
+    throw new Error(`not a decimal amount: ${decimalAmount}`);
+  }
+  const { decimals } = providerFor(providerCode);
+  const [whole, fraction = ''] = decimalAmount.trim().split('.');
+
+  if (decimals === 0) {
+    // An integer currency cannot carry a fraction. Rounding here would silently
+    // lose or invent money, so refuse and make the caller decide.
+    if (fraction.replace(/0+$/, '').length > 0) {
+      throw new Error(
+        `${providerCode} settles in whole units; "${decimalAmount}" has a fractional part`,
+      );
+    }
+    return Number(whole);
+  }
+
+  if (fraction.replace(/0+$/, '').length > decimals) {
+    throw new Error(
+      `${providerCode} supports ${decimals} decimal place(s); "${decimalAmount}" has more`,
+    );
+  }
+  // Built as a string and parsed once, so no float arithmetic happens on the way.
+  return Number(`${whole}.${(fraction + '00').slice(0, decimals)}`);
+}
+
+/** KPay's number -> our decimal string. */
+export function fromKpayAmount(amount: number, providerCode: string): string {
+  const { decimals } = providerFor(providerCode);
+  if (!Number.isFinite(amount)) throw new Error(`not a number: ${String(amount)}`);
+  // toFixed on a value KPay produced is safe: it arrived with at most `decimals`
+  // places, so there is nothing to round away.
+  return amount.toFixed(decimals);
+}

@@ -1,0 +1,47 @@
+id: blnk
+name: Blnk
+category: finance
+summary: Double-entry ledger for money movement, balances and reconciliation
+repo: https://github.com/blnkfinance/blnk
+license: Apache-2.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - undici
+
+env:
+  - key: BLNK_URL
+    value: http://localhost:5001
+    comment: Blnk server API
+  - key: BLNK_SECRET_KEY
+    value: blnk_dev_secret
+    comment: Sent as the X-Blnk-Key header. Rotate for production.
+
+compose: compose.yml
+
+files:
+  - src: blnk.service.ts.hbs
+    dest: src/modules/blnk/blnk.service.ts
+  - src: blnk.module.ts.hbs
+    dest: src/modules/blnk/blnk.module.ts
+
+register:
+  - anchor: modules
+    snippet: BlnkModule,
+    import: "import { BlnkModule } from './modules/blnk/blnk.module';"
+
+deploy:
+  image: jerryenebeli/blnk:0.15.3
+  port: 5001
+  needsDatabase: true
+  env:
+    BLNK_DATA_SOURCE_DNS: "postgres://{{db.username}}:{{db.password}}@{{db.host}}:5432/{{db.name}}?sslmode=disable"
+    BLNK_SERVER_SECRET_KEY: "{{db.password}}"
+
+notes:
+  - "Money crosses this boundary as a DECIMAL STRING, never a JS number — the same rule as `money` columns."
+  - "Balances are namespaced per tenant via the `meta_data.tenant_id` field; always filter on it."
+  - "Blnk needs its own Postgres and Redis; the compose fragment adds both on separate ports."
+  - "A ledger is append-only. Corrections are compensating entries, never updates."
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `blnk` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

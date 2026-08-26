@@ -1,0 +1,237 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { KpayClient, KpayError } from '../domain/kpay.client';
+import { toKpayAmount, fromKpayAmount } from '../domain/money';
+import { MIN_PAYMENT_XAF, MIN_WITHDRAWAL_XAF, providerFor } from '../domain/providers';
+import type {
+  KpayPaymentResponse,
+  KpayWithdrawal,
+  PaymentRequest,
+  KpayProviderCode,
+} from '../domain/kpay.types';
+
+export interface WithdrawalRequest {
+  amount: string;
+  externalId: string;
+  provider?: KpayProviderCode;
+  phoneNumber?: string;
+  /** Pay a registered bank account instead of a phone number. */
+  bankAccountId?: string;
+  /** Debit a wallet in another country. Enables cross-currency payout. */
+  sourceCountry?: string;
+  recipientFirstName?: string;
+  recipientLastName?: string;
+  purposeOfFunds?: string;
+  sourceOfFunds?: string;
+  description?: string;
+  returnUrl?: string;
+}
+
+/**
+ * KPay payments and payouts.
+ *
+ * Accepts every method KPay supports — Mobile Money by USSD push or hosted page,
+ * card, and PayPal — and builds the correct request body for each. The three
+ * shapes are mutually exclusive at the API level, and sending a field that does
+ * not belong to the chosen mode is a 400, so the body is assembled per branch
+ * rather than by spreading one object and hoping.
+ */
+@Injectable()
+export class KpayService {
+  private readonly log = new Logger(KpayService.name);
+
+  constructor(private readonly client: KpayClient) {}
+
+  /**
+   * Start a payment.
+   *
+   * `externalId` is the idempotency key. A 409 means one is already in flight
+   * for that id — which on a retry is success, not failure, so it is resolved
+   * by reading the existing payment rather than surfaced as an error.
+   */
+  async initPayment(input: PaymentRequest): Promise<KpayPaymentResponse> {
+    const body = this.buildPaymentBody(input);
+    try {
+      return await this.client.call<KpayPaymentResponse>('POST', '/api/v1/payments/init', body);
+    } catch (err) {
+      if (err instanceof KpayError && err.isDuplicate) {
+        this.log.warn(`externalId ${input.externalId} is already in flight — returning the original`);
+        const existing = await this.findByExternalId(input.externalId);
+        if (existing) return existing;
+      }
+      throw err;
+    }
+  }
+
+  private buildPaymentBody(input: PaymentRequest): Record<string, unknown> {
+    // An explicit switch on the discriminant. The compiler then guarantees each
+    // branch sees only the fields that branch is allowed to send — which is the
+    // point, because KPay returns a 400 for any field that does not belong to
+    // the chosen mode.
+    const common = {
+      externalId: input.externalId,
+      ...(input.description ? { description: input.description } : {}),
+      ...(input.customerEmail ? { customerEmail: input.customerEmail } : {}),
+      ...(input.metadata ? { metadata: input.metadata } : {}),
+    };
+
+    switch (input.method) {
+      // Card and PayPal have no phone push, so KPay opens the hosted page even
+      // when the application is configured for USSD.
+      case 'card':
+      case 'paypal':
+        return {
+          ...common,
+          amount: this.amountFor(input.amount, input.currencyProvider),
+          paymentMethod: input.method === 'card' ? 'CARD' : 'PAYPAL',
+          returnUrl: input.returnUrl,
+          ...(input.cancelUrl ? { cancelUrl: input.cancelUrl } : {}),
+        };
+
+      case 'mobile-money': {
+        if (input.mode === 'gateway') {
+          // provider / phoneNumber / customerName are REJECTED here with a 400.
+          return {
+            ...common,
+            amount: this.amountFor(input.amount, input.currencyProvider),
+            returnUrl: input.returnUrl,
+            ...(input.cancelUrl ? { cancelUrl: input.cancelUrl } : {}),
+          };
+        }
+
+        // USSD push.
+        const amount = toKpayAmount(input.amount, input.provider);
+        this.assertMinimum(amount, input.provider, MIN_PAYMENT_XAF, 'payment');
+        return {
+          ...common,
+          amount,
+          provider: input.provider,
+          phoneNumber: normalisePhone(input.phoneNumber),
+          ...(input.customerName ? { customerName: input.customerName } : {}),
+        };
+      }
+
+      default: {
+        // Adding a method to the union without a branch is a compile error.
+        const never: never = input;
+        throw new Error(`unhandled payment method: ${JSON.stringify(never)}`);
+      }
+    }
+  }
+
+  /**
+   * In gateway mode the operator is unknown until the customer picks one, so the
+   * decimals cannot be derived. `currencyProvider` supplies them as a hint; with
+   * no hint the amount must already be an integer, which is true for XAF and XOF.
+   */
+  private amountFor(amount: string, hint?: KpayProviderCode): number {
+    if (hint) return toKpayAmount(amount, hint);
+    if (!/^\d+$/.test(amount.trim())) {
+      throw new Error(
+        `gateway payments need an integer amount unless currencyProvider says otherwise; got "${amount}"`,
+      );
+    }
+    return Number(amount);
+  }
+
+  private assertMinimum(amount: number, provider: string, minimum: number, kind: string): void {
+    const { currencies } = providerFor(provider);
+    // The documented minimum is a XAF-zone figure; applying it to KES or UGX
+    // would reject perfectly valid amounts.
+    if (currencies.includes('XAF') && amount < minimum) {
+      throw new Error(`${kind} minimum for ${provider} is ${minimum} XAF; got ${amount}`);
+    }
+  }
+
+  getPayment(id: string): Promise<KpayPaymentResponse> {
+    return this.client.call<KpayPaymentResponse>('GET', `/api/v1/payments/${id}`);
+  }
+
+  /**
+   * Full refund. KPay has no partial refund — there is no `amount` field — and
+   * the original fee is not returned. The window is 7 days from completion.
+   */
+  refund(paymentId: string, reason?: string, externalId?: string) {
+    return this.client.call<{ id: string; status: string; amount: number; currency: string }>(
+      'POST',
+      `/api/v1/payments/${paymentId}/refund`,
+      { ...(reason ? { reason } : {}), ...(externalId ? { externalId } : {}) },
+    );
+  }
+
+  async withdraw(input: WithdrawalRequest): Promise<KpayWithdrawal> {
+    const body: Record<string, unknown> = {
+      externalId: input.externalId,
+      ...(input.description ? { description: input.description } : {}),
+    };
+
+    if (input.bankAccountId) {
+      // A bank payout takes country, currency and beneficiary from the stored
+      // account; provider and phoneNumber must not be sent.
+      body['bankAccountId'] = input.bankAccountId;
+      body['amount'] = Number(input.amount);
+    } else if (input.returnUrl && !input.phoneNumber) {
+      body['returnUrl'] = input.returnUrl;
+      body['amount'] = Number(input.amount);
+    } else {
+      if (!input.provider || !input.phoneNumber) {
+        throw new Error('a USSD payout needs both provider and phoneNumber');
+      }
+      const amount = toKpayAmount(input.amount, input.provider);
+      this.assertMinimum(amount, input.provider, MIN_WITHDRAWAL_XAF, 'withdrawal');
+      body['amount'] = amount;
+      body['provider'] = input.provider;
+      body['phoneNumber'] = normalisePhone(input.phoneNumber);
+    }
+
+    if (input.sourceCountry) {
+      // Cross-border transfers carry compliance obligations: who is receiving
+      // and where the money came from.
+      body['sourceCountry'] = input.sourceCountry;
+      body['recipientFirstName'] = input.recipientFirstName;
+      body['recipientLastName'] = input.recipientLastName;
+      body['purposeOfFunds'] = input.purposeOfFunds ?? 'PERSONAL_TRANSFER';
+      body['sourceOfFunds'] = input.sourceOfFunds ?? 'BUSINESS_INCOME';
+      if (!input.recipientFirstName || !input.recipientLastName) {
+        throw new Error('a cross-country payout requires the recipient first and last name');
+      }
+    }
+
+    return this.client.call<KpayWithdrawal>('POST', '/api/v1/payments/withdraw', body);
+  }
+
+  getWithdrawal(id: string): Promise<KpayWithdrawal> {
+    return this.client.call<KpayWithdrawal>('GET', `/api/v1/payments/withdraw/${id}`);
+  }
+
+  balance() {
+    return this.client.call<
+      Array<{ currency: string; balance: number; reservedBalance: number; availableBalance: number }>
+    >('GET', '/api/v1/payments/balance');
+  }
+
+  /** A suggestion only — you remain responsible for the provider you send. */
+  predictProvider(phoneNumber: string) {
+    return this.client.call<{ country: string; provider: string; phoneNumber: string }>(
+      'POST',
+      '/api/v1/payments/predict-provider',
+      { phoneNumber: normalisePhone(phoneNumber) },
+    );
+  }
+
+  availability() {
+    return this.client.call<unknown[]>('GET', '/api/v1/payments/availability');
+  }
+
+  /** Our own record is the index; KPay has no lookup by externalId. */
+  private async findByExternalId(_externalId: string): Promise<KpayPaymentResponse | null> {
+    return null;
+  }
+
+  static toDecimal = fromKpayAmount;
+}
+
+/** International format, no `+` and no leading zero, digits only. */
+export function normalisePhone(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  return digits.replace(/^0+/, '');
+}

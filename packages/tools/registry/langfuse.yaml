@@ -1,0 +1,21 @@
+id: langfuse
+name: Langfuse
+category: ai
+summary: Tracing, evaluation and cost tracking for LLM calls
+repo: https://github.com/langfuse/langfuse
+license: MIT
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "langfuse"
+
+env:
+  - key: LANGFUSE_HOST
+    value: "http://localhost:3050"
+  - key: LANGFUSE_PUBLIC_KEY
+  - key: LANGFUSE_SECRET_KEY
+
+notes:
+  - Self-hosting needs Postgres, ClickHouse, Redis and MinIO — use the upstream compose file.
+  - Prompts and completions often contain customer data. Redact before tracing.

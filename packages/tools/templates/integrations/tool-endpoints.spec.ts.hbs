@@ -1,0 +1,44 @@
+import { ToolEndpoints, TOOL_NOT_REST } from './tool-endpoints';
+
+describe('reaching a tool', () => {
+  const endpoints = new ToolEndpoints();
+
+  afterEach(() => {
+    delete process.env['MEILI_URL'];
+    delete process.env['MEILI_MASTER_KEY'];
+  });
+
+  it('resolves a conventional tool from <ID>_URL', () => {
+    process.env['MEILI_URL'] = 'http://localhost:7700/';
+    // Trailing slash removed here, so a config typo cannot produce `//indexes`.
+    expect(endpoints.base('meilisearch')).toBe('http://localhost:7700');
+  });
+
+  it('throws naming the missing variable, not "undefined/api/x" later', () => {
+    expect(() => endpoints.base('meilisearch')).toThrow(/MEILI_URL is not set/);
+  });
+
+  it('sets auth only where the scheme is one known header', () => {
+    process.env['MEILI_URL'] = 'http://localhost:7700';
+    process.env['MEILI_MASTER_KEY'] = 'secret';
+    expect(endpoints.headers('meilisearch')).toEqual({ authorization: 'Bearer secret' });
+    // Gotenberg has no credential; inventing a header would be a silent 401.
+    expect(endpoints.headers('gotenberg')).toEqual({});
+  });
+
+  it('tells you what to use instead when a tool is not REST', () => {
+    // The point of this: `endpoints.base('temporal')` failing on a missing
+    // TEMPORAL_URL teaches nothing. Naming the mechanism does.
+    expect(() => endpoints.base('temporal')).toThrow(/gRPC/);
+    expect(() => endpoints.base('minio')).toThrow(/storage module/);
+    expect(() => endpoints.base('livekit')).toThrow(/per-room signed JWT/);
+    expect(endpoints.has('temporal')).toBe(false);
+  });
+
+  it('lists every non-REST tool with a reason, never a bare entry', () => {
+    for (const [id, why] of Object.entries(TOOL_NOT_REST)) {
+      expect(why.length).toBeGreaterThan(10);
+      expect(() => endpoints.base(id)).toThrow(new RegExp(`"${id}" is not reached over REST`));
+    }
+  });
+});

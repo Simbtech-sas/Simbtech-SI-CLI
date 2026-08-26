@@ -1,0 +1,49 @@
+import { z } from 'zod';
+import { defineEvent, type EventContract } from './contract.ts';
+
+/**
+ * What a durable workflow announces.
+ *
+ * A workflow does NOT call `producer.send()`, and it does not call the mailer.
+ * It publishes through an activity that writes to the outbox, exactly like the
+ * rest of the system — so a workflow's announcements survive a broker outage and
+ * arrive in the same order, on the same rails, as everything else.
+ */
+const workflowBase = z.object({
+  workflowId: z.string(),
+  runId: z.string().optional(),
+});
+
+export const TenantActivated = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'onboarding',
+  type: 'TenantActivated',
+  version: 1,
+  schema: workflowBase.extend({
+    tenantId: z.string().uuid(),
+    tenantName: z.string(),
+    activatedAt: z.string().datetime({ offset: true }),
+  }),
+});
+
+/**
+ * The customer never finished. Not a failure — nothing broke, they walked away.
+ * A consumer should archive, not alert.
+ */
+export const TenantOnboardingAbandoned = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'onboarding',
+  type: 'TenantOnboardingAbandoned',
+  version: 1,
+  schema: workflowBase.extend({
+    tenantId: z.string().uuid(),
+    /** Which step they stopped at. The useful field for a funnel. */
+    lastStep: z.string(),
+    abandonedAt: z.string().datetime({ offset: true }),
+  }),
+});
+
+export const WORKFLOW_EVENTS = {
+  TenantActivated,
+  TenantOnboardingAbandoned,
+} as const satisfies Record<string, EventContract>;

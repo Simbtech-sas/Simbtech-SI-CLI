@@ -1,0 +1,27 @@
+id: typesense
+name: Typesense
+category: search
+summary: Fast open-source search with a simpler operational story than OpenSearch
+repo: https://github.com/typesense/typesense
+license: GPL-3.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "typesense"
+
+env:
+  - key: TYPESENSE_URL
+    value: "http://localhost:8108"
+  - key: TYPESENSE_API_KEY
+    value: typesense_dev_key
+
+compose: compose.yml
+
+deploy:
+  image: typesense/typesense:29.0
+  port: 8108
+  storage: 20Gi
+
+notes:
+  - Scoped search keys embed a filter, which is how you keep one tenant out of another tenant documents.

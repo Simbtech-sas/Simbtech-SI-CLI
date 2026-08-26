@@ -1,0 +1,52 @@
+/**
+ * What the subscription engine needs from a payment provider.
+ *
+ * Deliberately small, and deliberately NOT card-shaped. The critical method is
+ * `capabilities.autoCharge`: with a card on file a renewal is a silent charge,
+ * but Mobile Money has no card on file — every renewal is a REQUEST the customer
+ * approves on their phone.
+ *
+ * Modelling that as a capability rather than assuming one or the other is what
+ * lets the same engine drive KPay and a card processor without pretending they
+ * behave alike.
+ */
+export interface BillingCapabilities {
+  /**
+   * True when the provider can charge without the customer present.
+   *
+   * False for Mobile Money USSD. When false the engine sends a request, notifies
+   * the customer, and waits — so the grace period must be long enough for a
+   * person to notice and act, not just for a retry loop to finish.
+   */
+  autoCharge: boolean;
+  /** True when the provider can return a link the customer opens to pay. */
+  paymentLinks: boolean;
+}
+
+export interface ChargeRequest {
+  tenantId: string;
+  /** Our invoice id, used as the provider's idempotency key. */
+  externalId: string;
+  amount: string;
+  currency: string;
+  description: string;
+  /** Mobile Money number, when the provider needs one. */
+  phoneNumber?: string;
+  email?: string;
+  /** Where to send the customer back, for link-based providers. */
+  returnUrl?: string;
+}
+
+export type ChargeResult =
+  /** Settled immediately. Only possible when `autoCharge` is true. */
+  | { outcome: 'paid'; reference: string }
+  /** The customer must act. The engine waits for the provider's webhook. */
+  | { outcome: 'awaiting-customer'; reference: string; paymentUrl?: string }
+  | { outcome: 'failed'; reason: string };
+
+export interface BillingPort {
+  readonly capabilities: BillingCapabilities;
+  charge(request: ChargeRequest): Promise<ChargeResult>;
+}
+
+export const BILLING_PORT = Symbol('BILLING_PORT');

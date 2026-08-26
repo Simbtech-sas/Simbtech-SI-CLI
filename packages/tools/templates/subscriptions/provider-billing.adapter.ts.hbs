@@ -1,0 +1,85 @@
+import { Injectable } from '@nestjs/common';
+import { AppConfigService } from '../../../config/app-config.service';
+import { PaymentRegistry } from '../../payments/application/payment-registry';
+import type { BillingCapabilities, BillingPort, ChargeRequest, ChargeResult } from '../domain/billing-port';
+
+/**
+ * Billing, through whichever payment provider the project was scaffolded with.
+ *
+ * This used to name KPay. It no longer does: `si new --payments joonapay` would
+ * otherwise have dragged KPay in anyway, and adding a third provider meant a
+ * third adapter here. The registry routes by currency and method; billing does
+ * not need to know which rail answered.
+ */
+@Injectable()
+export class ProviderBillingAdapter implements BillingPort {
+  constructor(
+    private readonly providers: PaymentRegistry,
+    private readonly config: AppConfigService,
+  ) {}
+
+  /**
+   * The capabilities of the WEAKEST configured provider, not the strongest.
+   *
+   * `every`, not `some`: the engine uses `autoCharge` to decide whether a
+   * renewal should settle silently. If one of two providers cannot, assuming it
+   * can marks those renewals failed within seconds of being requested. The
+   * pessimistic answer costs a redundant notification; the optimistic one cuts
+   * customers off.
+   */
+  get capabilities(): BillingCapabilities {
+    const all = this.providers.all();
+    if (all.length === 0) return { autoCharge: false, paymentLinks: false };
+    return {
+      autoCharge: all.every((p) => p.capabilities.autoCharge),
+      paymentLinks: all.every((p) => p.capabilities.paymentLinks),
+    };
+  }
+
+  async charge(request: ChargeRequest): Promise<ChargeResult> {
+    try {
+      // A direct prompt when we hold a number — it reaches the customer without
+      // them opening anything. `selectProvider` prefers a provider that can
+      // actually push one, and falls back to a link rather than failing.
+      const mode = request.phoneNumber ? 'ussd' : 'link';
+      const provider = this.providers.select({
+        tenantId: request.tenantId,
+        externalId: request.externalId,
+        amount: request.amount,
+        currency: request.currency,
+        description: request.description,
+        method: 'mobile-money',
+        mode,
+        phoneNumber: request.phoneNumber,
+        email: request.email,
+        returnUrl: request.returnUrl ?? `${this.config.webPublicUrl}/billing/return`,
+      });
+
+      const result = await provider.charge({
+        tenantId: request.tenantId,
+        externalId: request.externalId,
+        amount: request.amount,
+        currency: request.currency,
+        description: request.description,
+        method: 'mobile-money',
+        mode,
+        phoneNumber: request.phoneNumber,
+        email: request.email,
+        returnUrl: request.returnUrl ?? `${this.config.webPublicUrl}/billing/return`,
+      });
+
+      if (result.outcome === 'failed') return { outcome: 'failed', reason: result.reason };
+      if (result.outcome === 'paid') return { outcome: 'paid', reference: result.reference };
+      return {
+        outcome: 'awaiting-customer',
+        reference: result.reference,
+        paymentUrl: result.paymentUrl,
+      };
+    } catch (err) {
+      // Includes "no configured provider settles XAF" — which is a
+      // misconfiguration, and better as a failed invoice with a readable reason
+      // than as an unhandled exception in a nightly cron.
+      return { outcome: 'failed', reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+}

@@ -1,0 +1,83 @@
+import { Body, Controller, Delete, Get, Post, UseGuards } from '@nestjs/common';
+import { createZodDto } from 'nestjs-zod';
+import { z } from 'zod';
+import { AccessGuard } from '../../auth/interface/access.guard';
+import { CurrentPrincipal } from '../../auth/interface/current-principal.decorator';
+import type { AccessTokenPayload } from '../../auth/domain/jwt-payload';
+import { AppConfigService } from '../../../config/app-config.service';
+import { MfaService } from '../application/mfa.service';
+import { DevicesService } from '../application/devices.service';
+
+class CodeDto extends createZodDto(
+  // Six digits, or a recovery code. Bounded so a 1MB "code" is not an argon2
+  // call an attacker chose the cost of.
+  z.object({ code: z.string().min(6).max(32) }),
+) {}
+
+class DisableDto extends createZodDto(z.object({ password: z.string().min(1).max(200) })) {}
+
+/**
+ * Second factor and device management.
+ *
+ * Every route requires an existing session: enrolling, confirming and disabling
+ * are all things an authenticated user does to their own account.
+ */
+@Controller('auth/mfa')
+@UseGuards(AccessGuard)
+export class MfaController {
+  constructor(
+    private readonly mfa: MfaService,
+    private readonly devices: DevicesService,
+    private readonly config: AppConfigService,
+  ) {}
+
+  /** Returns the otpauth:// URI. Render it as a QR in the client. */
+  @Post('enrol')
+  async enrol(@CurrentPrincipal() principal: AccessTokenPayload) {
+    const { uri } = await this.mfa.begin(
+      principal.sub,
+      principal.email ?? principal.sub,
+      this.config.serviceName,
+    );
+    // The raw secret is deliberately NOT returned. The URI carries it for the
+    // authenticator; echoing it separately invites it into a log or a screenshot.
+    return { uri };
+  }
+
+  /** Prove the authenticator works. Returns the recovery codes — once. */
+  @Post('confirm')
+  async confirm(@CurrentPrincipal() principal: AccessTokenPayload, @Body() dto: CodeDto) {
+    const codes = await this.mfa.confirm(
+      principal.sub,
+      dto.code,
+      principal.email ?? principal.sub,
+      this.config.serviceName,
+    );
+    return {
+      recoveryCodes: codes,
+      warning: 'Store these now. They are hashed and cannot be shown again.',
+    };
+  }
+
+  @Get('status')
+  async status(@CurrentPrincipal() principal: AccessTokenPayload) {
+    return { enabled: await this.mfa.isRequired(principal.sub) };
+  }
+
+  @Delete()
+  async disable(@CurrentPrincipal() principal: AccessTokenPayload, @Body() dto: DisableDto) {
+    await this.devices.disableMfaWithPassword(principal.sub, dto.password);
+    return { disabled: true };
+  }
+
+  /** What is signed in, so a user can end a session they do not recognise. */
+  @Get('devices')
+  list(@CurrentPrincipal() principal: AccessTokenPayload) {
+    return this.devices.list(principal.sub);
+  }
+
+  @Delete('devices/:id')
+  revoke(@CurrentPrincipal() principal: AccessTokenPayload, @Body() body: { id: string }) {
+    return this.devices.revoke(principal.sub, body.id);
+  }
+}

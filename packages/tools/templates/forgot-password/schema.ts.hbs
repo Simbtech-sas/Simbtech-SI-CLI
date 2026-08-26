@@ -1,0 +1,25 @@
+import { index, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { users } from './identity';
+
+/**
+ * Reset tokens, stored hashed and single-use.
+ *
+ * Not RLS-scoped: a reset is requested by someone who cannot log in, so there is
+ * no tenant context to scope by.
+ */
+export const passwordResetTokens = pgTable(
+  'password_reset_tokens',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    requestedIp: text('requested_ip'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('password_reset_user_idx').on(t.userId), index('password_reset_expires_idx').on(t.expiresAt)],
+);

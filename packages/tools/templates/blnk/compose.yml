@@ -1,0 +1,32 @@
+services:
+  # Blnk — double-entry ledger. Runs its own Postgres and Redis so its write
+  # patterns never contend with the application database.
+  blnk:
+    image: jerryenebeli/blnk:0.15.3
+    restart: unless-stopped
+    depends_on:
+      - blnk-postgres
+      - blnk-redis
+    environment:
+      BLNK_DATA_SOURCE_DNS: postgres://blnk:blnk_dev_pwd@blnk-postgres:5432/blnk?sslmode=disable
+      BLNK_REDIS_DNS: blnk-redis:6379
+      BLNK_SERVER_SECRET_KEY: ${BLNK_SECRET_KEY:-blnk_dev_secret}
+    ports:
+      - '5001:5001'
+
+  blnk-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blnk
+      POSTGRES_PASSWORD: blnk_dev_pwd
+      POSTGRES_DB: blnk
+    volumes:
+      - blnk-postgres-data:/var/lib/postgresql/data
+
+  blnk-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+volumes:
+  blnk-postgres-data:

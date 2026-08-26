@@ -1,0 +1,15 @@
+import { Global, Module } from '@nestjs/common';
+import { PaymentRegistry } from './application/payment-registry';
+import { PaymentPublisher } from './application/payment-publisher';
+
+/**
+ * Global so provider modules can inject the registry without importing this
+ * module and creating a cycle: the registry knows no provider, and every
+ * provider knows the registry.
+ */
+@Global()
+@Module({
+  providers: [PaymentRegistry, PaymentPublisher],
+  exports: [PaymentRegistry, PaymentPublisher],
+})
+export class PaymentsModule {}

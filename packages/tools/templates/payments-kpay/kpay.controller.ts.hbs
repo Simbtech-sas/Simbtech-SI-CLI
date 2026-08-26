@@ -1,0 +1,135 @@
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Logger,
+  Post,
+  Query,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
+import { AppConfigService } from '../../../config/app-config.service';
+import { KpayService } from '../application/kpay.service';
+import { KpayPaymentsRepository } from '../infrastructure/kpay-payments.repository';
+import { verifyGatewayReturn, verifyWebhookSignature } from '../domain/signatures';
+import { isTerminal, type KpayWebhookEvent } from '../domain/kpay.types';
+
+type RawBodyRequest = FastifyRequest & { rawBody?: Buffer };
+
+/**
+ * Callbacks from KPay. Both routes are UNAUTHENTICATED by design — the caller is
+ * KPay, not a user — so the signature is the only thing standing between a
+ * stranger and a free order.
+ */
+@Controller('payments/kpay')
+export class KpayController {
+  private readonly log = new Logger(KpayController.name);
+
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly kpay: KpayService,
+    private readonly payments: KpayPaymentsRepository,
+  ) {}
+
+  /**
+   * Webhook. The authoritative source of a final status.
+   *
+   * Three rules, each from the KPay documentation and each easy to get wrong:
+   *
+   * 1. Verify the HMAC against the **raw** body. Re-serialising the parsed JSON
+   *    changes key order and whitespace, the MAC stops matching, and the usual
+   *    "fix" is to stop verifying.
+   * 2. Respond 200 **fast**. KPay times out at 3s and retries 3 times; slow work
+   *    here turns one payment into four webhook deliveries.
+   * 3. Be idempotent. The same event will arrive more than once.
+   */
+  @Post('webhook')
+  @HttpCode(200)
+  async webhook(@Req() req: RawBodyRequest, @Body() event: KpayWebhookEvent) {
+    const secret = this.config.kpay?.webhookSecret;
+    if (!secret) throw new UnauthorizedException('KPay webhooks are not configured');
+
+    const raw = req.rawBody;
+    if (!raw) {
+      // Fastify must be created with `rawBody: true`, or there is nothing
+      // trustworthy to verify and the endpoint must fail closed.
+      this.log.error('no raw body available — cannot verify the webhook signature');
+      throw new UnauthorizedException('signature cannot be verified');
+    }
+
+    const signature = req.headers['x-kpay-signature'];
+    if (!verifyWebhookSignature(raw, typeof signature === 'string' ? signature : undefined, secret)) {
+      // Do not echo anything from the payload: an attacker probing this endpoint
+      // learns nothing from the response.
+      this.log.warn('rejected a KPay webhook with an invalid signature');
+      throw new UnauthorizedException('invalid signature');
+    }
+
+    // Informational events carry no decision. Acknowledge and stop.
+    if (!isTerminal(event.status)) {
+      this.log.log(`${event.event} for ${event.reference} (informational)`);
+      return { received: true };
+    }
+
+    // Idempotent: a unique index on the KPay payment id means a redelivery is a
+    // no-op rather than a second fulfilment.
+    const applied = await this.payments.applyTerminalStatus(event);
+    this.log.log(
+      `${event.event} ${event.reference} -> ${event.status}${applied ? '' : ' (already applied)'}`,
+    );
+    return { received: true };
+  }
+
+  /**
+   * The signed redirect the customer lands on after the hosted page.
+   *
+   * The golden rule from the KPay docs: a valid signature is NOT proof of
+   * payment. The customer controls their own browser and can replay an old
+   * redirect, so the status is confirmed against the API before anything is
+   * marked paid. This route exists to route the user, not to settle an order.
+   */
+  @Get('return')
+  async gatewayReturn(
+    @Query() query: Record<string, string>,
+    @Req() _req: FastifyRequest,
+  ) {
+    const secret = this.config.kpay?.gatewaySecret;
+    if (!secret) throw new BadRequestException('the KPay gateway is not configured');
+
+    const verdict = verifyGatewayReturn(query, secret);
+    if (!verdict.ok) {
+      this.log.warn(`rejected a gateway return: ${verdict.reason}`);
+      throw new UnauthorizedException('invalid or expired return');
+    }
+
+    // Confirmed against KPay, not against the query string.
+    const record = await this.payments.findByReference(query['reference']!);
+    if (!record) throw new BadRequestException('unknown payment');
+
+    const confirmed = await this.kpay.getPayment(record.kpayPaymentId);
+    if (isTerminal(confirmed.status)) {
+      await this.payments.applyTerminalStatus({
+        event: `payment.${confirmed.status.toLowerCase()}`,
+        paymentId: confirmed.id,
+        reference: confirmed.reference,
+        status: confirmed.status,
+        amount: confirmed.amount,
+        externalId: confirmed.externalId,
+        completedAt: confirmed.completedAt ?? null,
+        failureReason: confirmed.failureReason ?? null,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return {
+      status: confirmed.status,
+      reference: confirmed.reference,
+      externalId: confirmed.externalId,
+      // The webhook remains authoritative; this is what the browser sees now.
+      settled: confirmed.status === 'COMPLETED',
+    };
+  }
+}

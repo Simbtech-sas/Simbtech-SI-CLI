@@ -1,0 +1,129 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { AppConfigService } from '../../../config/app-config.service';
+
+export class KpayError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly body?: unknown,
+  ) {
+    super(message);
+    this.name = 'KpayError';
+  }
+
+  /** 409 means this externalId is already live — a retry, not a failure. */
+  get isDuplicate(): boolean {
+    return this.status === 409;
+  }
+
+  /** Worth retrying: rate limits, provider outages, network faults. */
+  get isTransient(): boolean {
+    return this.status === 429 || this.status >= 500;
+  }
+}
+
+const MAX_ATTEMPTS = 4;
+
+/**
+ * HTTP transport for KPay.
+ *
+ * The environment is chosen by the KEY PREFIX (`kpay_test_` vs `kpay_live_`),
+ * not by the URL — there is one base URL for both. That means a production key
+ * in a staging config moves real money with no other signal, so the client
+ * checks the prefix against NODE_ENV and refuses the dangerous combination.
+ */
+@Injectable()
+export class KpayClient {
+  private readonly log = new Logger(KpayClient.name);
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+  private readonly secretKey: string;
+  /** False when no keys are set. The module still loads; it just cannot charge. */
+  readonly configured: boolean;
+
+  constructor(private readonly config: AppConfigService) {
+    const kpay = config.kpay;
+
+    // Installed-but-unconfigured is the normal state on day one, and it must not
+    // stop the API from booting. Throwing here takes down auth, uploads and
+    // everything else because a payment key is missing — so this stays inert and
+    // `call()` refuses instead, where the failure belongs.
+    this.configured = kpay !== null;
+    if (!kpay) {
+      this.baseUrl = '';
+      this.apiKey = '';
+      this.secretKey = '';
+      this.log.warn('KPAY_API_KEY / KPAY_SECRET_KEY are not set — KPay is inactive');
+      return;
+    }
+
+    this.baseUrl = kpay.baseUrl;
+    this.apiKey = kpay.apiKey;
+    this.secretKey = kpay.secretKey;
+
+    const isLive = this.apiKey.startsWith('kpay_live_');
+    if (isLive && !config.isProduction) {
+      // The single most expensive misconfiguration available here.
+      throw new Error(
+        'a kpay_live_ key is configured outside production — this would move real money. ' +
+          'Use a kpay_test_ key, or set NODE_ENV=production deliberately.',
+      );
+    }
+    if (!isLive && config.isProduction) {
+      this.log.warn('running in production with a KPay TEST key — no real payment will settle');
+    }
+  }
+
+  get isLive(): boolean {
+    return this.apiKey.startsWith('kpay_live_');
+  }
+
+  async call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+    if (!this.configured) throw new KpayError(503, 'KPay is not configured');
+
+    let lastError: KpayError | undefined;
+
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      // Global fetch, not a HTTP client dependency: one less package to keep
+      // patched on the path that moves money.
+      const res = await fetch(`${this.baseUrl}${path}`, {
+        method,
+        headers: {
+          'X-API-Key': this.apiKey,
+          'X-Secret-Key': this.secretKey,
+          ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        // Without this a hung KPay holds the request open until the process dies.
+        signal: AbortSignal.timeout(20_000),
+      });
+
+      const text = await res.text();
+      let parsed: unknown = text;
+      try {
+        parsed = text.length > 0 ? JSON.parse(text) : null;
+      } catch {
+        /* KPay returned something that is not JSON */
+      }
+
+      if (res.ok) return parsed as T;
+
+      const message =
+        (parsed as { message?: string } | null)?.message ?? `KPay ${method} ${path} failed`;
+      lastError = new KpayError(res.status, message, parsed);
+
+      // A 4xx that is not a rate limit will not become a 2xx on retry.
+      if (!lastError.isTransient || attempt === MAX_ATTEMPTS) throw lastError;
+
+      // Honour Retry-After when KPay sends one; it knows better than our backoff.
+      const retryAfter = Number(res.headers.get('retry-after'));
+      const delay = Number.isFinite(retryAfter)
+        ? retryAfter * 1000
+        : 1000 * 2 ** (attempt - 1);
+      this.log.warn(`KPay ${res.status} on ${path}, retrying in ${delay}ms`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+
+    throw lastError ?? new KpayError(500, 'KPay call failed');
+  }
+}

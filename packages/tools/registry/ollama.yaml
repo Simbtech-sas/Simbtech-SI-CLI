@@ -1,0 +1,28 @@
+id: ollama
+name: Ollama
+category: ai
+summary: Run open-weight LLMs locally — no data leaves the host
+repo: https://github.com/ollama/ollama
+license: MIT
+flavors: [sisaas, simice, sical, platform]
+
+deps:
+  server:
+    - "ollama"
+
+env:
+  - key: OLLAMA_URL
+    value: "http://localhost:11434"
+  - key: OLLAMA_MODEL
+    value: llama3.2
+
+compose: compose.yml
+
+deploy:
+  image: ollama/ollama:0.13.0
+  port: 11434
+  storage: 50Gi
+
+notes:
+  - The only entry here that works in a SiMICE air-gapped deployment — everything stays on the machine.
+  - CPU inference is slow; pass a GPU through for anything interactive.

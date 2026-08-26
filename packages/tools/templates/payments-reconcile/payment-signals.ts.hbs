@@ -1,0 +1,24 @@
+/**
+ * Names shared by the workflow and the process that signals it.
+ *
+ * Plain strings in their own file: the API sends the signal, and importing the
+ * workflow to reach it would evaluate `proxyActivities` outside the Temporal
+ * sandbox.
+ */
+export const AWAIT_PAYMENT = 'awaitPayment';
+export const PAYMENT_RESOLVED_SIGNAL = 'paymentResolved';
+
+/**
+ * When to stop asking.
+ *
+ * Sized for Mobile Money, not for cards. A card authorises in seconds; a USSD
+ * prompt needs the customer awake, in coverage and holding their phone, so a
+ * payment still unresolved after ten minutes is normal rather than broken.
+ *
+ * The intervals back off because the first poll is the most likely to be
+ * pointless — the webhook is usually already on its way.
+ */
+export const POLL_SCHEDULE = ['2 minutes', '5 minutes', '15 minutes', '1 hour', '4 hours'] as const;
+
+/** After this, a payment nobody completed is abandoned rather than polled forever. */
+export const GIVE_UP_AFTER = '24 hours';

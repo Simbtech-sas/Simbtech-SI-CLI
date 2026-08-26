@@ -1,0 +1,68 @@
+/**
+ * KPay operator catalogue.
+ *
+ * `decimals` is the part that matters: XAF and XOF are integer currencies, while
+ * several providers accept two decimal places. Sending 1050 where the operator
+ * expects 10.50 is a 100× overcharge, so the amount conversion is driven from
+ * this table rather than assumed.
+ */
+export interface KpayProvider {
+  code: string;
+  country: string;
+  operator: string;
+  currencies: string[];
+  decimals: number;
+}
+
+export const KPAY_PROVIDERS = {
+  MTN_MOMO_BEN: { code: 'MTN_MOMO_BEN', country: 'BEN', operator: 'MTN', currencies: ['XOF'], decimals: 0 },
+  MOOV_BEN: { code: 'MOOV_BEN', country: 'BEN', operator: 'Moov', currencies: ['XOF'], decimals: 0 },
+  MTN_MOMO_CMR: { code: 'MTN_MOMO_CMR', country: 'CMR', operator: 'MTN', currencies: ['XAF'], decimals: 0 },
+  ORANGE_CMR: { code: 'ORANGE_CMR', country: 'CMR', operator: 'Orange', currencies: ['XAF'], decimals: 0 },
+  MTN_MOMO_CIV: { code: 'MTN_MOMO_CIV', country: 'CIV', operator: 'MTN', currencies: ['XOF'], decimals: 0 },
+  ORANGE_CIV: { code: 'ORANGE_CIV', country: 'CIV', operator: 'Orange', currencies: ['XOF'], decimals: 0 },
+  VODACOM_MPESA_COD: { code: 'VODACOM_MPESA_COD', country: 'COD', operator: 'Vodacom M-Pesa', currencies: ['CDF', 'USD'], decimals: 2 },
+  AIRTEL_COD: { code: 'AIRTEL_COD', country: 'COD', operator: 'Airtel', currencies: ['CDF', 'USD'], decimals: 2 },
+  ORANGE_COD: { code: 'ORANGE_COD', country: 'COD', operator: 'Orange', currencies: ['CDF', 'USD'], decimals: 2 },
+  AIRTEL_GAB: { code: 'AIRTEL_GAB', country: 'GAB', operator: 'Airtel', currencies: ['XAF'], decimals: 2 },
+  MPESA_KEN: { code: 'MPESA_KEN', country: 'KEN', operator: 'M-Pesa', currencies: ['KES'], decimals: 2 },
+  AIRTEL_COG: { code: 'AIRTEL_COG', country: 'COG', operator: 'Airtel', currencies: ['XAF'], decimals: 0 },
+  MTN_MOMO_COG: { code: 'MTN_MOMO_COG', country: 'COG', operator: 'MTN', currencies: ['XAF'], decimals: 0 },
+  AIRTEL_RWA: { code: 'AIRTEL_RWA', country: 'RWA', operator: 'Airtel', currencies: ['RWF'], decimals: 0 },
+  MTN_MOMO_RWA: { code: 'MTN_MOMO_RWA', country: 'RWA', operator: 'MTN', currencies: ['RWF'], decimals: 0 },
+  FREE_SEN: { code: 'FREE_SEN', country: 'SEN', operator: 'Free', currencies: ['XOF'], decimals: 0 },
+  ORANGE_SEN: { code: 'ORANGE_SEN', country: 'SEN', operator: 'Orange', currencies: ['XOF'], decimals: 0 },
+  ORANGE_SLE: { code: 'ORANGE_SLE', country: 'SLE', operator: 'Orange', currencies: ['SLE'], decimals: 2 },
+  AIRTEL_OAPI_UGA: { code: 'AIRTEL_OAPI_UGA', country: 'UGA', operator: 'Airtel', currencies: ['UGX'], decimals: 0 },
+  MTN_MOMO_UGA: { code: 'MTN_MOMO_UGA', country: 'UGA', operator: 'MTN', currencies: ['UGX'], decimals: 2 },
+  AIRTEL_OAPI_ZMB: { code: 'AIRTEL_OAPI_ZMB', country: 'ZMB', operator: 'Airtel', currencies: ['ZMW'], decimals: 2 },
+  MTN_MOMO_ZMB: { code: 'MTN_MOMO_ZMB', country: 'ZMB', operator: 'MTN', currencies: ['ZMW'], decimals: 2 },
+  ZAMTEL_ZMB: { code: 'ZAMTEL_ZMB', country: 'ZMB', operator: 'Zamtel', currencies: ['ZMW'], decimals: 2 },
+} as const satisfies Record<string, KpayProvider>;
+
+export type KpayProviderCode = keyof typeof KPAY_PROVIDERS;
+
+export function providerFor(code: string): KpayProvider {
+  const provider = KPAY_PROVIDERS[code as KpayProviderCode];
+  if (!provider) {
+    throw new Error(
+      `unknown KPay provider "${code}". One of: ${Object.keys(KPAY_PROVIDERS).join(', ')}`,
+    );
+  }
+  return provider;
+}
+
+/** Minimums from the KPay documentation, in the provider's major unit. */
+export const MIN_PAYMENT_XAF = 50;
+export const MIN_WITHDRAWAL_XAF = 100;
+
+/**
+ * Every currency KPay settles, derived from the provider table rather than
+ * written out again — a new provider must not be able to add a currency the
+ * router does not know about.
+ *
+ * Card and PayPal add nothing here: they settle in the same currencies.
+ */
+export const CURRENCIES: readonly string[] = [
+  ...new Set(Object.values(KPAY_PROVIDERS).flatMap((p) => p.currencies as readonly string[])),
+].sort();

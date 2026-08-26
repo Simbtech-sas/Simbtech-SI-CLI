@@ -1,0 +1,104 @@
+import { boolean, index, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { tenants } from './tenants';
+
+export const billingInterval = pgEnum('billing_interval', ['month', 'year']);
+
+/**
+ * `pending_payment` is the state a card-based engine does not need.
+ *
+ * Mobile Money renewals wait on a human approving a prompt. Without this state
+ * every renewal would read as a failure for as long as the customer took to
+ * reach their phone.
+ */
+export const subscriptionStatus = pgEnum('subscription_status', [
+  'trialing',
+  'pending_payment',
+  'active',
+  'past_due',
+  'suspended',
+  'cancelled',
+]);
+
+export const invoiceStatus = pgEnum('invoice_status', [
+  'draft',
+  'awaiting_payment',
+  'paid',
+  'failed',
+  'void',
+]);
+
+/** Shared across tenants, so NOT tenant-scoped. */
+export const plans = pgTable('plans', {
+  id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+  /** Stable identifier used in code. The name may change; this must not. */
+  code: text('code').notNull().unique(),
+  name: text('name').notNull(),
+  description: text('description'),
+  amount: numeric('amount', { precision: 20, scale: 4 }).notNull(),
+  currency: text('currency').notNull(),
+  interval: billingInterval('interval').notNull().default('month'),
+  trialDays: integer('trial_days').notNull().default(0),
+  features: jsonb('features').$type<Record<string, boolean>>().notNull().default({}),
+  /** Retired plans stay: existing subscribers keep the terms they signed up on. */
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const subscriptions = pgTable(
+  'subscriptions',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    planId: uuid('plan_id')
+      .notNull()
+      .references(() => plans.id),
+    status: subscriptionStatus('status').notNull().default('trialing'),
+    currentPeriodStart: timestamp('current_period_start', { withTimezone: true }).notNull(),
+    currentPeriodEnd: timestamp('current_period_end', { withTimezone: true }).notNull(),
+    trialEndsAt: timestamp('trial_ends_at', { withTimezone: true }),
+    /** Longer than a card business would allow — approving a prompt needs a person. */
+    graceUntil: timestamp('grace_until', { withTimezone: true }),
+    cancelAtPeriodEnd: boolean('cancel_at_period_end').notNull().default(false),
+    cancelledAt: timestamp('cancelled_at', { withTimezone: true }),
+    /** Mobile Money needs a number, not a stored token. */
+    billingPhone: text('billing_phone'),
+    billingEmail: text('billing_email'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('one_subscription_per_tenant').on(t.tenantId)],
+);
+
+export const subscriptionInvoices = pgTable(
+  'subscription_invoices',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    subscriptionId: uuid('subscription_id')
+      .notNull()
+      .references(() => subscriptions.id, { onDelete: 'cascade' }),
+    number: text('number').notNull().unique(),
+    status: invoiceStatus('status').notNull().default('draft'),
+    amount: numeric('amount', { precision: 20, scale: 4 }).notNull(),
+    currency: text('currency').notNull(),
+    periodStart: timestamp('period_start', { withTimezone: true }).notNull(),
+    periodEnd: timestamp('period_end', { withTimezone: true }).notNull(),
+    paymentReference: text('payment_reference'),
+    attempts: integer('attempts').notNull().default(0),
+    lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    failureReason: text('failure_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One invoice per period — the guard against double-charging on a retried job.
+    unique('one_invoice_per_period').on(t.subscriptionId, t.periodStart),
+    index('invoices_tenant_idx').on(t.tenantId, t.createdAt),
+    index('invoices_payment_ref_idx').on(t.paymentReference),
+  ],
+);

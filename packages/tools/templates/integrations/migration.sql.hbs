@@ -1,0 +1,21 @@
+-- Every webhook delivery an imported tool has made.
+--
+-- Deliberately NOT tenant-scoped and NOT RLS-protected: a third-party tool knows
+-- nothing about our tenants, so a delivery belongs to the integration, not to a
+-- customer. Whatever it turns into downstream IS tenant-scoped; this row is the
+-- doorbell, not the visitor.
+CREATE TABLE "webhook_deliveries" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"source" text NOT NULL,
+	-- The tool's own delivery id, or a SHA-256 of the body when it sends none.
+	"delivery_id" text NOT NULL,
+	"event" text NOT NULL,
+	-- Kept for replay, and for settling an argument with a vendor about what
+	-- they actually sent.
+	"payload" jsonb NOT NULL,
+	"received_at" timestamp with time zone DEFAULT now() NOT NULL,
+	-- Every webhook system on earth retries. This is what makes the second
+	-- delivery a no-op instead of a second order.
+	CONSTRAINT "webhook_deliveries_source_delivery" UNIQUE ("source", "delivery_id")
+);--> statement-breakpoint
+CREATE INDEX "webhook_deliveries_received_idx" ON "webhook_deliveries" ("received_at");

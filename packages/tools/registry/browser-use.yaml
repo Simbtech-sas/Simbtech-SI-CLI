@@ -1,0 +1,23 @@
+id: browser-use
+name: Browser Use
+category: ai
+summary: An LLM agent that drives a real browser — fills forms, scrapes, clicks through flows
+repo: https://github.com/browser-use/browser-use
+license: MIT
+flavors: [sisaas, simice, platform]
+
+env:
+  - key: ANTHROPIC_API_KEY
+    comment: Or OPENAI_API_KEY / GOOGLE_API_KEY — browser-use needs an LLM to drive the browser.
+
+compose: compose.yml
+
+notes:
+  - "It is a PYTHON library and CLI, not a service. There is nothing to `si service add --from browser-use` — no HTTP server exists to deploy, and the schema refuses it rather than generating a workload that would never answer."
+  - "The HTTP API at api.browser-use.com is the hosted CLOUD product, not something you run. Self-hosted, you get the library, the CLI, and an MCP server."
+  - "That MCP server is STDIO only — `browser-use --mcp` needs a stdin. It is reachable by a process on the same machine, not over the network, so it cannot be a cluster service without a bridge you would have to write."
+  - "From a TypeScript backend, invoke it as a one-shot: `docker compose exec` in development, a Kubernetes Job in production. Long-running is the wrong shape — each task starts a browser and ends."
+  - "Chrome dies on the default 64MB /dev/shm; the compose fragment sets 1gb. The crash reads as a browser-use bug rather than a container limit, which is why it is set rather than documented."
+  - "`browser-use --version` prints the CLI's own number (0.1.9), NOT the library's. The image tag, PyPI and the git release all agree on 0.13.8 — verified by reading `importlib.metadata` inside the container. Do not chase the mismatch."
+  - "Port 9222 is the Chrome DevTools Protocol, exposed so you can watch a run or attach Playwright to the same browser."
+  - "It sends page content to an LLM. On a tenant's data that is a processor relationship — decide it deliberately before pointing this at production."

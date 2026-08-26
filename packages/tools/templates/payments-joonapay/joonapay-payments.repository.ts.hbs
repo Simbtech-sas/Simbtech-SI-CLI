@@ -1,0 +1,140 @@
+import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { and, eq, inArray } from 'drizzle-orm';
+import { DatabaseService } from '../../../database/database.service';
+import { joonapayPayments } from '../../../database/schema';
+import type { ProviderEvent } from '../../payments/domain/payment-provider.port';
+import { PaymentPublisher } from '../../payments/application/payment-publisher';
+import { PaymentRegistry } from '../../payments/application/payment-registry';
+
+@Injectable()
+export class JoonapayPaymentsRepository implements OnModuleInit {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly publisher: PaymentPublisher,
+    private readonly registry: PaymentRegistry,
+  ) {}
+
+  onModuleInit(): void {
+    // So a reconciliation poll can apply an outcome without knowing which
+    // provider it is talking about.
+    this.registry.registerReconciler('joonapay', (event) => this.applyTerminalState(event));
+  }
+
+  /** Record a payment we just started. */
+  async record(
+    tenantId: string,
+    row: {
+      joonapayUuid: string;
+      reference: string;
+      externalId: string;
+      amount: string;
+      currency: string;
+      countryUuid?: string | null;
+      checkoutUrl?: string | null;
+      isTest: boolean;
+      metadata?: Record<string, unknown> | null;
+    },
+  ): Promise<void> {
+    await this.database.runInTenantContext(tenantId, async (tx) => {
+      const inserted = await tx
+        .insert(joonapayPayments)
+        .values({
+          tenantId,
+          joonapayUuid: row.joonapayUuid,
+          reference: row.reference,
+          externalId: row.externalId,
+          amount: row.amount,
+          currency: row.currency,
+          countryUuid: row.countryUuid ?? null,
+          checkoutUrl: row.checkoutUrl ?? null,
+          isTest: row.isTest,
+          metadata: row.metadata ?? null,
+        })
+        // A retry of the same externalId must not create a second row.
+        .onConflictDoNothing()
+        .returning({ id: joonapayPayments.id });
+
+      // Only announce a payment we actually created. A retry that inserted
+      // nothing must not start a second thing waiting on the same payment.
+      if (inserted.length === 0) return;
+      await this.publisher.publishRequested(
+        tx,
+        {
+          provider: 'joonapay',
+          reference: row.reference,
+          externalId: row.externalId,
+          amount: row.amount,
+          currency: row.currency,
+          paymentUrl: row.checkoutUrl ?? undefined,
+        },
+        tenantId,
+      );
+    });
+  }
+
+  /**
+   * Apply a terminal state. Returns false when it was already applied.
+   *
+   * Runs on the ADMIN connection: a webhook carries no tenant context — JoonaPay
+   * knows nothing about our tenants — so the row is found by JoonaPay's own
+   * reference and the tenant is read from it, never taken from the payload.
+   *
+   * The idempotency guard is the status column. Only a non-terminal row moves,
+   * so a redelivery matches nothing and changes nothing. Doing it as one
+   * conditional UPDATE rather than read-then-write also makes two deliveries
+   * arriving at the same instant safe: the second sees zero rows affected.
+   */
+  async applyTerminalState(event: ProviderEvent): Promise<boolean> {
+    return this.database.requireAdminDb().transaction(async (tx) => {
+      const updated = await tx
+        .update(joonapayPayments)
+        .set({
+          status: event.state as 'settled' | 'failed' | 'cancelled',
+          paidAmount: event.amount ?? null,
+          failureReason: event.failureReason ?? null,
+          settledAt: event.state === 'settled' ? new Date(event.occurredAt) : null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(joonapayPayments.reference, event.reference),
+            inArray(joonapayPayments.status, ['pending', 'processing']),
+          ),
+        )
+        // The tenant comes from OUR row, never from the payload: JoonaPay knows
+        // nothing about our tenants, so anything tenant-shaped in a webhook is
+        // attacker-controlled.
+        .returning({ id: joonapayPayments.id, tenantId: joonapayPayments.tenantId });
+
+      const row = updated[0];
+      if (!row) return false;
+
+      // Same transaction as the status change. A redelivery moves no row and so
+      // publishes nothing — the database and every consumer stay idempotent
+      // together, rather than the database alone.
+      await this.publisher.publish(tx, event, row.tenantId);
+      return true;
+    });
+  }
+
+  async findByReference(reference: string) {
+    const [row] = await this.database
+      .requireAdminDb()
+      .select()
+      .from(joonapayPayments)
+      .where(eq(joonapayPayments.reference, reference))
+      .limit(1);
+    return row;
+  }
+
+  async findByExternalId(tenantId: string, externalId: string) {
+    return this.database.runInTenantContext(tenantId, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(joonapayPayments)
+        .where(eq(joonapayPayments.externalId, externalId))
+        .limit(1);
+      return row;
+    });
+  }
+}

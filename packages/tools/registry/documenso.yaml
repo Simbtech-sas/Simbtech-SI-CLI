@@ -1,0 +1,16 @@
+id: documenso
+name: Documenso
+category: docs
+summary: Self-hosted e-signature with a legally meaningful audit trail
+repo: https://github.com/documenso/documenso
+license: AGPL-3.0
+flavors: [sisaas, platform]
+
+env:
+  - key: DOCUMENSO_URL
+    value: "http://localhost:3060"
+  - key: DOCUMENSO_API_TOKEN
+
+notes:
+  - Needs its own Postgres and a signing certificate; deploy from the upstream compose file.
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `documenso` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

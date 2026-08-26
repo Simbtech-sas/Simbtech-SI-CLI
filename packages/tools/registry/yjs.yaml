@@ -1,0 +1,23 @@
+id: yjs
+name: Yjs
+category: local-first
+summary: CRDTs for real-time collaborative editing that merges without a server referee
+repo: https://github.com/yjs/yjs
+license: MIT
+flavors: [sisaas, sical, sibile-rn, simice]
+
+deps:
+  server:
+    - "yjs"
+    - "y-protocols"
+  web:
+    - "yjs"
+    - "y-websocket"
+
+env:
+  - key: YJS_WS_URL
+    value: "ws://localhost:1234"
+
+notes:
+  - Pairs with the Socket.IO gateway already in SiSAAS — you do not need a second websocket server.
+  - CRDTs converge; they do not enforce invariants. Validate on the server before persisting.

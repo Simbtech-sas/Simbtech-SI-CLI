@@ -1,0 +1,30 @@
+services:
+  browser-use:
+    # Pinned to a release tag. The image also publishes `main` and `sha-*`, and
+    # `main` moves under you — on a tool that drives a browser with an LLM, an
+    # unnoticed upgrade changes behaviour, not just bytes.
+    image: browseruse/browseruse:0.13.8
+    restart: unless-stopped
+    # browser-use is a CLI and a library, not a server: there is nothing to
+    # serve. The container stays up so you can run tasks in it:
+    #
+    #   docker compose exec browser-use browser-use "find the pricing page"
+    entrypoint: ['sleep', 'infinity']
+    environment:
+      # Whichever provider you use. Passed through from your shell or .env —
+      # never baked into this file.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+    # Chrome dies on the default 64MB /dev/shm, and the crash looks like a
+    # browser-use bug rather than a container limit.
+    shm_size: 1gb
+    ports:
+      # Chrome DevTools Protocol. Attach a debugger, or drive the same browser
+      # from Playwright while browser-use has it open.
+      - '9222:9222'
+    volumes:
+      - browser-use-data:/data
+
+volumes:
+  browser-use-data:

@@ -1,0 +1,108 @@
+import {
+  BadRequestException,
+  Controller,
+  Get,
+  HttpCode,
+  Logger,
+  Post,
+  Query,
+  Req,
+  UnauthorizedException,
+} from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
+import { JoonapayProvider } from '../application/joonapay.provider';
+import { JoonapayPaymentsRepository } from '../infrastructure/joonapay-payments.repository';
+import { isTerminal } from '../domain/joonapay.types';
+
+type RawBodyRequest = FastifyRequest & { rawBody?: Buffer };
+
+/**
+ * Callbacks from JoonaPay. Both routes are UNAUTHENTICATED by design — the
+ * caller is JoonaPay or the customer's browser, not a logged-in user.
+ */
+@Controller('payments/joonapay')
+export class JoonapayController {
+  private readonly log = new Logger(JoonapayController.name);
+
+  constructor(
+    private readonly provider: JoonapayProvider,
+    private readonly payments: JoonapayPaymentsRepository,
+  ) {}
+
+  /**
+   * Webhook — the authoritative source of a final status.
+   *
+   * JoonaPay retries immediately, then at 5s, then at 30s, and gives up after
+   * three failures with a 10s timeout per attempt. So: verify, apply, answer
+   * 200. Anything slow here turns one payment into three deliveries and then
+   * into a payment nobody was told about.
+   */
+  @Post('webhook')
+  @HttpCode(200)
+  async webhook(@Req() req: RawBodyRequest) {
+    const raw = req.rawBody;
+    if (!raw) {
+      // Fastify must be created with `rawBody: true`. Re-serialising the parsed
+      // JSON changes key order and whitespace, the HMAC stops matching, and the
+      // usual "fix" for that is to stop verifying. Fail closed instead.
+      this.log.error('no raw body available — cannot verify the webhook signature');
+      throw new UnauthorizedException('signature cannot be verified');
+    }
+
+    const event = this.provider.verifyWebhook(raw, req.headers as Record<string, unknown>);
+    if (!event) {
+      // Nothing from the payload is echoed: a stranger probing this endpoint
+      // learns only that it exists.
+      this.log.warn('rejected a JoonaPay webhook with an invalid signature');
+      throw new UnauthorizedException('invalid signature');
+    }
+
+    if (!isTerminal(event.state)) {
+      this.log.log(`JoonaPay ${event.reference} -> ${event.state} (informational)`);
+      return { received: true };
+    }
+
+    const applied = await this.payments.applyTerminalState(event);
+    this.log.log(
+      `JoonaPay ${event.reference} -> ${event.state}${applied ? '' : ' (already applied)'}`,
+    );
+    return { received: true };
+  }
+
+  /**
+   * Where the customer's browser lands after checkout.
+   *
+   * JoonaPay appends `?reference=…&status=SUCCESS` — and that query string is
+   * UNSIGNED. Anyone can type it. It routes the user and nothing else; the
+   * status shown comes from the API, and the webhook remains authoritative.
+   */
+  @Get('return')
+  async paymentReturn(@Query('reference') reference?: string) {
+    if (!reference) throw new BadRequestException('reference is required');
+
+    const record = await this.payments.findByReference(reference);
+    if (!record) throw new BadRequestException('unknown payment');
+
+    // Asked of JoonaPay, not read off the query string.
+    const confirmed = await this.provider.get(record.joonapayUuid);
+    if (isTerminal(confirmed.state)) {
+      await this.payments.applyTerminalState({
+        provider: 'joonapay',
+        reference: record.reference,
+        externalId: record.externalId,
+        state: confirmed.state,
+        amount: confirmed.amount,
+        currency: confirmed.currency,
+        failureReason: confirmed.failureReason ?? null,
+        occurredAt: confirmed.settledAt ?? new Date().toISOString(),
+      });
+    }
+
+    return {
+      reference: record.reference,
+      externalId: record.externalId,
+      state: confirmed.state,
+      settled: confirmed.state === 'settled',
+    };
+  }
+}

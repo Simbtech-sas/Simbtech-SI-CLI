@@ -1,0 +1,38 @@
+id: payments-reconcile
+kind: feature
+name: Payment reconciliation
+category: finance
+summary: Recovers a payment whose webhook never arrived, by asking the provider on a schedule
+repo: https://github.com/SIMBTECH-SAS/boilerplates
+license: UNLICENSED
+flavors: [sisaas]
+requires: [payments-core, temporal]
+
+files:
+  - src: payment-signals.ts.hbs
+    dest: src/modules/payments-reconcile/domain/payment-signals.ts
+  - src: payment-activities.ts.hbs
+    dest: src/modules/payments-reconcile/application/payment-activities.ts
+  - src: await-payment.workflow.ts.hbs
+    dest: src/modules/payments-reconcile/workflows/await-payment.workflow.ts
+  - src: payment-reconcile.handlers.ts.hbs
+    dest: src/modules/payments-reconcile/application/payment-reconcile.handlers.ts
+  - src: payments-reconcile.module.ts.hbs
+    dest: src/modules/payments-reconcile/payments-reconcile.module.ts
+  - src: await-payment.e2e-spec.ts.hbs
+    dest: test/e2e/await-payment.e2e-spec.ts
+
+register:
+  - anchor: workflows
+    snippet: "export * from '../../payments-reconcile/workflows/await-payment.workflow';"
+  - anchor: workerModules
+    snippet: PaymentsReconcileModule,
+    import: "import { PaymentsReconcileModule } from './modules/payments-reconcile/payments-reconcile.module';"
+
+notes:
+  - "A Mobile Money webhook is a best-effort HTTP call from someone else's network. When one is lost the money still moved — and without this the payment sits pending forever: the invoice stays unpaid, dunning runs, and a customer who paid gets suspended."
+  - "The happy path costs nothing. The webhook signals the workflow within seconds and it exits before the first poll is due; polling is the fallback, not the mechanism."
+  - "`PaymentReconciled` is a separate event from `PaymentSettled` on purpose. Every one of them is a webhook that was not delivered — a trickle is normal, a spike means your endpoint is unreachable and nothing else would tell you, because the money still arrives."
+  - "Poll backoff is 2m, 5m, 15m, 1h, 4h, then one 24h wait. Sized for a USSD prompt that needs the customer awake and in coverage, not for a card that authorises in seconds."
+  - "Still pending after 24 hours is abandoned, not failed. Marking it failed would be a claim the provider never made."
+  - "Registered in the WORKER only — that is where events are consumed and where the Temporal worker runs."

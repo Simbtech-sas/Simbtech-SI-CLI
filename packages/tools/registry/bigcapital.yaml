@@ -1,0 +1,29 @@
+id: bigcapital
+name: Bigcapital
+category: finance
+summary: Double-entry accounting — invoices, bills, ledgers, financial statements
+repo: https://github.com/bigcapitalhq/bigcapital
+license: AGPL-3.0
+flavors: [sisaas, platform]
+
+env:
+  - key: BIGCAPITAL_URL
+    value: "http://localhost:9810"
+    comment: The API. The web UI is on 9800.
+  - key: BIGCAPITAL_JWT_SECRET
+    comment: Signs sessions for an accounting system. Generate it; never ship the compose default.
+
+compose: compose.yml
+
+deploy:
+  image: bigcapitalhq/server:v0.25.34
+  port: 3000
+  needsDatabase: true
+
+notes:
+  - "AGPL-3.0. Running it as a network service you offer to others triggers the source-provision obligation for YOUR modifications to it. Using it internally does not. Read the licence before it reaches a customer-facing deployment."
+  - "It is an accounting LEDGER, not a payment rail. Money moves through payments-kpay or payments-joonapay; this records what the movement meant. Wiring `PaymentSettled` to a journal entry is the integration, and it is not written."
+  - "MariaDB, not Postgres — and it creates a DATABASE PER TENANT at runtime, so it needs CREATE DATABASE on its server. That is why the fragment gives it its own MariaDB rather than a database in the shared cluster: `si service add --database dedicated` is the equivalent on the cluster."
+  - "It renders PDFs through Gotenberg, which this registry already ships. `si add gotenberg` and they share one renderer."
+  - "The upstream compose runs Watchtower to auto-update the containers. Deliberately dropped: unattended upgrades of a financial system is how a reconciliation breaks overnight with nobody watching."
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `bigcapital` source in `webhook-sources.ts` — confirm the header against current docs first."

@@ -1,0 +1,12 @@
+/**
+ * Signal and workflow names, as plain constants.
+ *
+ * They live here rather than in the workflow file because the API process needs
+ * them to send a signal, and importing the workflow file would evaluate
+ * `proxyActivities` outside a workflow context — the Temporal sandbox is not
+ * available there, and the failure is obscure.
+ *
+ * One string, two importers, no sandbox leaking into Nest.
+ */
+export const TENANT_ONBOARDING = 'tenantOnboarding';
+export const EMAIL_VERIFIED_SIGNAL = 'emailVerified';

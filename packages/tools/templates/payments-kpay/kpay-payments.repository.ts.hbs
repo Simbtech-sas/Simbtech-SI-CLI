@@ -1,0 +1,198 @@
+import { Injectable, type OnModuleInit } from '@nestjs/common';
+import { and, eq, inArray } from 'drizzle-orm';
+import { DatabaseService } from '../../../database/database.service';
+import { kpayPayments } from '../../../database/schema';
+import type { KpayPaymentResponse, KpayWebhookEvent } from '../domain/kpay.types';
+import { PaymentPublisher } from '../../payments/application/payment-publisher';
+import { PaymentRegistry } from '../../payments/application/payment-registry';
+import type { PaymentState, ProviderEvent } from '../../payments/domain/payment-provider.port';
+
+/** KPay's uppercase statuses in the port's vocabulary. */
+/** The port's vocabulary back into KPay's, for an outcome we found by asking. */
+const KPAY_STATUS: Partial<Record<PaymentState, 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'REFUNDED'>> = {
+  settled: 'COMPLETED',
+  failed: 'FAILED',
+  cancelled: 'CANCELLED',
+  refunded: 'REFUNDED',
+};
+
+const KPAY_STATE: Record<string, PaymentState> = {
+  COMPLETED: 'settled',
+  FAILED: 'failed',
+  CANCELLED: 'cancelled',
+  REFUNDED: 'refunded',
+  PROCESSING: 'processing',
+  PENDING: 'pending',
+};
+
+@Injectable()
+export class KpayPaymentsRepository implements OnModuleInit {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly publisher: PaymentPublisher,
+    private readonly registry: PaymentRegistry,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.registerReconciler('kpay', (event) => this.applyTerminalState(event));
+  }
+
+  /**
+   * Apply a terminal outcome located by REFERENCE rather than by KPay's payment
+   * id — the shape a reconciliation poll produces.
+   *
+   * A second entry point into the same state machine, and safe because it uses
+   * the same conditional UPDATE: only a row still PENDING or PROCESSING moves,
+   * so a poll and a late webhook cannot both fulfil one payment.
+   */
+  async applyTerminalState(event: ProviderEvent): Promise<boolean> {
+    return this.database.requireAdminDb().transaction(async (tx) => {
+      const updated = await tx
+        .update(kpayPayments)
+        .set({
+          status: KPAY_STATUS[event.state] ?? 'FAILED',
+          failureReason: event.failureReason ?? null,
+          completedAt: event.state === 'settled' ? new Date(event.occurredAt) : null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(kpayPayments.reference, event.reference),
+            inArray(kpayPayments.status, ['PENDING', 'PROCESSING']),
+          ),
+        )
+        .returning({ id: kpayPayments.id, tenantId: kpayPayments.tenantId });
+
+      const row = updated[0];
+      if (!row) return false;
+      await this.publisher.publish(tx, event, row.tenantId);
+      return true;
+    });
+  }
+
+  /** Record a payment we just started, in the caller's transaction. */
+  async record(
+    tenantId: string,
+    response: KpayPaymentResponse,
+    detail: { method: string; mode: string; amount: string },
+  ): Promise<void> {
+    await this.database.runInTenantContext(tenantId, async (tx) => {
+      const inserted = await tx
+        .insert(kpayPayments)
+        .values({
+          tenantId,
+          kpayPaymentId: response.id,
+          reference: response.reference,
+          providerReference: response.providerReference ?? null,
+          externalId: response.externalId,
+          status: response.status,
+          amount: detail.amount,
+          currency: response.currency,
+          provider: response.provider ?? null,
+          country: response.country ?? null,
+          phoneNumber: response.phoneNumber ?? null,
+          paymentMethod: detail.method as never,
+          mode: detail.mode as never,
+          isTest: response.isTest,
+          metadata: response.metadata ?? null,
+        })
+        // A retry of the same externalId must not create a second row.
+        .onConflictDoNothing()
+        .returning({ id: kpayPayments.id });
+
+      // Only announce a payment we actually created — a retry that inserted
+      // nothing must not start a second thing waiting on the same payment.
+      if (inserted.length === 0) return;
+      await this.publisher.publishRequested(
+        tx,
+        {
+          provider: 'kpay',
+          reference: response.reference,
+          externalId: response.externalId,
+          amount: detail.amount,
+          currency: response.currency,
+          paymentUrl: response.gatewayUrl,
+        },
+        tenantId,
+      );
+    });
+  }
+
+  /**
+   * Apply a terminal status. Returns false when it was already applied.
+   *
+   * The webhook is at-least-once, so this must be idempotent. The guard is the
+   * status column itself: once a payment is terminal it never moves again, so a
+   * redelivery updates nothing.
+   *
+   * Runs on the ADMIN connection: a webhook arrives with no tenant context — KPay
+   * knows nothing about our tenants — so the row is located by KPay's own id and
+   * the tenant is read from it.
+   */
+  async applyTerminalStatus(event: KpayWebhookEvent): Promise<boolean> {
+    return this.database.requireAdminDb().transaction(async (tx) => {
+      const updated = await tx
+        .update(kpayPayments)
+        .set({
+          status: event.status,
+          failureReason: event.failureReason ?? null,
+          completedAt: event.completedAt ? new Date(event.completedAt) : null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(kpayPayments.kpayPaymentId, event.paymentId),
+            // Only a non-terminal row moves. PROCESSING is listed alongside
+            // PENDING because a payment does not always pass through both.
+            inArray(kpayPayments.status, ['PENDING', 'PROCESSING']),
+          ),
+        )
+        // The tenant comes from OUR row, never from the payload: KPay knows
+        // nothing about our tenants, so anything tenant-shaped in a webhook is
+        // attacker-controlled.
+        .returning({ id: kpayPayments.id, tenantId: kpayPayments.tenantId, currency: kpayPayments.currency });
+
+      const row = updated[0];
+      if (!row) return false;
+
+      // Same transaction as the status change, so a redelivered webhook moves
+      // no row and publishes nothing.
+      await this.publisher.publish(
+        tx,
+        {
+          provider: 'kpay',
+          reference: event.reference,
+          externalId: event.externalId,
+          state: KPAY_STATE[event.status],
+          amount: String(event.amount),
+          currency: row.currency,
+          failureReason: event.failureReason ?? null,
+          occurredAt: event.completedAt ?? event.timestamp,
+        },
+        row.tenantId,
+      );
+      return true;
+    });
+  }
+
+  async findByReference(reference: string) {
+    const [row] = await this.database
+      .requireAdminDb()
+      .select()
+      .from(kpayPayments)
+      .where(eq(kpayPayments.reference, reference))
+      .limit(1);
+    return row;
+  }
+
+  async findByExternalId(tenantId: string, externalId: string) {
+    return this.database.runInTenantContext(tenantId, async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(kpayPayments)
+        .where(eq(kpayPayments.externalId, externalId))
+        .limit(1);
+      return row;
+    });
+  }
+}

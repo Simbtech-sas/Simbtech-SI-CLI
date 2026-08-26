@@ -1,0 +1,19 @@
+id: maplibre
+name: MapLibre GL
+category: geo
+summary: Vector maps in the browser without a proprietary tile provider
+repo: https://github.com/maplibre/maplibre-gl-js
+license: BSD-3-Clause
+flavors: [sisaas, sibile-rn, sibile-capacitor, sical]
+
+deps:
+  web:
+    - "maplibre-gl"
+
+env:
+  - key: MAP_STYLE_URL
+    value: "https://demotiles.maplibre.org/style.json"
+    comment: Swap for your own tile server in production
+
+notes:
+  - "SiCAL note: the demo style URL is a network call. Bundle tiles locally (PMTiles) for an offline build."

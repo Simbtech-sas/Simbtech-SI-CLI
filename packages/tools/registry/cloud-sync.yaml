@@ -1,0 +1,45 @@
+id: cloud-sync
+kind: feature
+name: Cloud sync endpoint
+category: sync
+summary: Keyed endpoints that let an on-premise install exchange its database and files with the cloud
+repo: https://en.wikipedia.org/wiki/Optimistic_concurrency_control
+license: UNLICENSED
+flavors: [sisaas]
+
+migrations:
+  - src: migration.sql.hbs
+    name: sync_installs
+
+files:
+  - src: schema.ts.hbs
+    dest: src/database/schema/sync.ts
+  - src: reconciliation.ts.hbs
+    dest: src/modules/sync/domain/reconciliation.ts
+  - src: reconciliation.spec.ts.hbs
+    dest: src/modules/sync/domain/reconciliation.spec.ts
+  - src: sync-key.guard.ts.hbs
+    dest: src/modules/sync/interface/sync-key.guard.ts
+  - src: sync.service.ts.hbs
+    dest: src/modules/sync/application/sync.service.ts
+  - src: sync.controller.ts.hbs
+    dest: src/modules/sync/interface/sync.controller.ts
+  - src: sync.module.ts.hbs
+    dest: src/modules/sync/sync.module.ts
+
+register:
+  - anchor: schema
+    snippet: "export * from './sync';"
+  - anchor: modules
+    snippet: SyncModule,
+    import: "import { SyncModule } from './modules/sync/sync.module';"
+
+notes:
+  - "Each install gets its own key, hashed at rest and revocable. A shared key across installs cannot be revoked for one site without breaking every site."
+  - "The key authorises ONE tenant. It is not a user credential and must never be accepted on a user route."
+  - "Conflicts are detected by VERSION, not timestamp: clocks on separate machines disagree, and two edits a second apart still conflict."
+  - "The default policy is `manual` — neither side is applied and a person decides. Set a per-entity policy in domain/reconciliation.ts before this touches real records."
+  - "Escalated conflicts land in `sync_conflicts` with BOTH payloads kept whole. Surface them: a queue nobody reads is deletion, only slower."
+  - "The SERVER owns the sync schedule (interval and optional window), returned on every handshake — changing a site's cadence must not require visiting the machine."
+  - "Files move by presigned URL — bytes never pass through this API."
+  - "Push requires an Idempotency-Key, so a retried batch cannot apply twice."

@@ -1,0 +1,16 @@
+id: frappe-charts
+name: Frappe Charts
+category: admin
+summary: Small dependency-free SVG charts — the library ERPNext draws with
+repo: https://github.com/frappe/charts
+license: MIT
+flavors: [sisaas, sical, sibile-capacitor]
+
+deps:
+  web:
+    - frappe-charts
+
+notes:
+  - "A browser library, not a service: nothing to deploy and nothing to reach over HTTP."
+  - "No dependencies of its own and no canvas — plain SVG, which is why it works in SiCAL where nothing may leave the machine."
+  - "Frappe's other browser libraries (gantt, datatable, frappe-ui) are separate npm packages; add them directly if you want them. Only this one earns a registry entry."

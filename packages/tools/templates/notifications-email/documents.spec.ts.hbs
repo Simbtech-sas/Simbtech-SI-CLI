@@ -1,0 +1,79 @@
+import { formatMoney, renderDocument, totalsFor, type InvoiceDocument } from './documents';
+
+const base: InvoiceDocument = {
+  kind: 'invoice',
+  number: 'INV-2026-0001',
+  issuedAt: new Date('2026-03-01T00:00:00Z'),
+  dueAt: new Date('2026-03-08T00:00:00Z'),
+  currency: 'XAF',
+  from: { name: 'Acme SARL', taxId: 'M0123456789' },
+  to: { name: 'Jean Dupont', email: 'jean@example.com' },
+  lines: [{ description: 'Pro plan — March 2026', unitAmount: '15000' }],
+};
+
+describe('money formatting', () => {
+  it('shows no decimals for a whole-unit currency', () => {
+    // "5 000,00 FCFA" is wrong in the way that makes a customer email support.
+    expect(formatMoney('5000', 'XAF')).not.toMatch(/[.,]00/);
+  });
+
+  it('shows two decimals where the currency has them', () => {
+    expect(formatMoney('50.5', 'EUR')).toMatch(/50[.,]50/);
+  });
+});
+
+describe('totals', () => {
+  it('adds money in minor units, not floats', () => {
+    // 0.1 + 0.2 in floats is 0.30000000000000004, and an invoice one centime out
+    // is an invoice a customer disputes.
+    const totals = totalsFor({
+      currency: 'EUR',
+      lines: [
+        { description: 'a', unitAmount: '0.10' },
+        { description: 'b', unitAmount: '0.20' },
+      ],
+    });
+    expect(totals.subtotal).toBe('0.30');
+  });
+
+  it('multiplies by quantity', () => {
+    const totals = totalsFor({ currency: 'XAF', lines: [{ description: 'seat', quantity: 3, unitAmount: '5000' }] });
+    expect(totals.subtotal).toBe('15000');
+  });
+
+  it('applies a tax rate and keeps subtotal + tax === total', () => {
+    const totals = totalsFor({
+      currency: 'XAF',
+      taxRate: 19.25,
+      lines: [{ description: 'Pro plan', unitAmount: '15000' }],
+    });
+    expect(totals.subtotal).toBe('15000');
+    expect(totals.tax).toBe('2888');
+    expect(Number(totals.subtotal) + Number(totals.tax)).toBe(Number(totals.total));
+  });
+
+  it('charges no tax when no rate is set', () => {
+    expect(totalsFor({ currency: 'XAF', lines: base.lines }).tax).toBe('0');
+  });
+});
+
+describe('rendering', () => {
+  it('renders a self-contained document with no external resources', () => {
+    // Gotenberg renders on a locked-down network; an external stylesheet is a
+    // document that silently prints unstyled.
+    const html = renderDocument(base);
+    expect(html).not.toMatch(/<link[^>]+href|src="http/);
+    expect(html).toContain('INV-2026-0001');
+  });
+
+  it('escapes a customer name rather than letting it become markup', () => {
+    const html = renderDocument({ ...base, to: { name: '<script>alert(1)</script>' } });
+    expect(html).not.toContain('<script>alert(1)</script>');
+    expect(html).toContain('&lt;script&gt;');
+  });
+
+  it('stamps a receipt PAID and an invoice not', () => {
+    expect(renderDocument({ ...base, kind: 'receipt', paidAt: new Date() })).toContain('PAID');
+    expect(renderDocument(base)).not.toContain('>PAID<');
+  });
+});

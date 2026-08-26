@@ -1,0 +1,90 @@
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import {
+  PaymentCancelled,
+  PaymentFailed,
+  PaymentRequested,
+  PaymentSettled,
+} from '@{{brand}}/events';
+import { EventRegistry } from '../../events/application/event-registry.service';
+import { TemporalClient } from '../../temporal/application/temporal.client';
+import { ActivityRegistry } from '../../temporal/application/activity-registry.service';
+import { DatabaseService } from '../../../database/database.service';
+import { PaymentRegistry } from '../../payments/application/payment-registry';
+import { PaymentPublisher } from '../../payments/application/payment-publisher';
+import { createPaymentActivities } from './payment-activities';
+import { AWAIT_PAYMENT, PAYMENT_RESOLVED_SIGNAL } from '../domain/payment-signals';
+
+/**
+ * Both seams between the payment events and the workflow, in one file.
+ *
+ * `PaymentRequested` STARTS the wait. `PaymentSettled` / `Failed` / `Cancelled`
+ * SIGNAL it, so the normal webhook path ends the workflow in seconds and no poll
+ * ever runs. Polling is the fallback for the case the webhook never arrives —
+ * not the mechanism.
+ */
+@Injectable()
+export class PaymentReconcileHandlers implements OnModuleInit {
+  private readonly log = new Logger(PaymentReconcileHandlers.name);
+
+  constructor(
+    private readonly registry: EventRegistry,
+    private readonly temporal: TemporalClient,
+    private readonly activities: ActivityRegistry,
+    private readonly database: DatabaseService,
+    private readonly payments: PaymentRegistry,
+    private readonly publisher: PaymentPublisher,
+  ) {}
+
+  /** Derived from the reference, so a redelivered event finds the run already going. */
+  private idFor(tenantId: string | null, reference: string): string {
+    return TemporalClient.workflowId(tenantId, 'payment', reference);
+  }
+
+  onModuleInit(): void {
+    // The workflow's activities. Registered rather than listed in the worker,
+    // so this module is the only file that knows payments own a workflow.
+    this.activities.register(
+      'payments-reconcile',
+      createPaymentActivities({
+        database: this.database,
+        registry: this.payments,
+        publisher: this.publisher,
+        log: this.log,
+      }) as never,
+    );
+
+    this.registry.on(PaymentRequested, 'await-settlement', async ({ payload, tenantId }) => {
+      const { started } = await this.temporal.startIdempotent(AWAIT_PAYMENT, {
+        workflowId: this.idFor(tenantId, payload.reference),
+        args: [
+          {
+            provider: payload.provider,
+            reference: payload.reference,
+            externalId: payload.externalId,
+            tenantId: tenantId ?? '',
+            amount: payload.amount,
+            currency: payload.currency,
+          },
+        ],
+      });
+      if (started) this.log.log(`waiting on payment ${payload.reference}`);
+    });
+
+    // The webhook arrived. Wake the workflow so it stops before polling.
+    const resolve = (state: 'settled' | 'failed' | 'cancelled') =>
+      async ({ payload, tenantId }: { payload: { reference: string }; tenantId: string | null }) => {
+        // A signal for a workflow that already finished is ordinary — a
+        // reconciliation poll got there first — and returns false rather than
+        // throwing, or the event would redeliver forever.
+        await this.temporal.signal(
+          this.idFor(tenantId, payload.reference),
+          PAYMENT_RESOLVED_SIGNAL,
+          state,
+        );
+      };
+
+    this.registry.on(PaymentSettled, 'resolve-wait', resolve('settled'));
+    this.registry.on(PaymentFailed, 'resolve-wait', resolve('failed'));
+    this.registry.on(PaymentCancelled, 'resolve-wait', resolve('cancelled'));
+  }
+}

@@ -1,0 +1,23 @@
+import { Global, Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
+import { EmailProcessor } from './application/email.processor';
+import { EMAIL_QUEUE, MailerService } from './application/mailer.service';
+import { PdfService } from './application/pdf.service';
+
+/**
+ * Registered in BOTH app.module and worker.module: the API queues, the worker
+ * sends. The processor only does work where a worker is running.
+ *
+ * `@Global` because sending mail is infrastructure, not a dependency of one
+ * feature. Without it, every feature that notifies anyone has to be wired into
+ * whichever module it lives in — forgot-password sits inside IamModule, and
+ * IamModule has no reason to know the mailer exists. That wiring is invisible
+ * to the compiler and only fails at boot.
+ */
+@Global()
+@Module({
+  imports: [BullModule.registerQueue({ name: EMAIL_QUEUE })],
+  providers: [MailerService, EmailProcessor, PdfService],
+  exports: [MailerService, PdfService],
+})
+export class NotificationsModule {}

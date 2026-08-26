@@ -1,0 +1,20 @@
+import { Module } from '@nestjs/common';
+import { KpayClient } from './domain/kpay.client';
+import { KpayService } from './application/kpay.service';
+import { KpayProvider } from './application/kpay.provider';
+import { KpayPaymentsRepository } from './infrastructure/kpay-payments.repository';
+import { KpayController } from './interface/kpay.controller';
+
+/**
+ * KPay — Mobile Money, card and PayPal across 12 African countries.
+ *
+ * The webhook route is deliberately outside the auth guard: the caller is KPay,
+ * not a user. Its HMAC signature is the only access control, which is why the
+ * verification fails closed on a missing raw body.
+ */
+@Module({
+  controllers: [KpayController],
+  providers: [KpayClient, KpayService, KpayProvider, KpayPaymentsRepository],
+  exports: [KpayService, KpayProvider, KpayPaymentsRepository],
+})
+export class KpayModule {}

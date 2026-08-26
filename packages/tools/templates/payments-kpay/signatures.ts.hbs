@@ -1,0 +1,85 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+/**
+ * KPay uses TWO different HMAC schemes with TWO different secrets. Mixing them
+ * up produces a verifier that rejects everything, or — far worse — one that
+ * accepts anything.
+ *
+ * 1. **Webhook** — `X-KPAY-Signature`, HMAC-SHA256 over the RAW request body.
+ * 2. **Gateway return** — `sig` query parameter, HMAC-SHA256 over the string
+ *    `status|reference|externalId|ts`.
+ */
+
+/** Constant-time hex comparison. `===` on a MAC leaks it one byte at a time. */
+function equals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  // timingSafeEqual throws on a length mismatch, and that throw is itself a
+  // signal, so the length is checked first and separately.
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+/**
+ * Verify a webhook against the RAW body.
+ *
+ * It must be the exact bytes received. Re-serialising the parsed JSON changes
+ * key order, whitespace and number formatting, so the MAC will not match — and
+ * the usual "fix" for that is to stop verifying.
+ */
+export function verifyWebhookSignature(
+  rawBody: Buffer | string,
+  signature: string | undefined,
+  secret: string,
+): boolean {
+  if (!signature) return false;
+  const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
+  return equals(signature, expected);
+}
+
+export interface GatewayReturn {
+  status: string;
+  reference: string;
+  externalId: string;
+  ts: string;
+  sig: string;
+}
+
+/** Ten minutes, per the KPay documentation. */
+export const RETURN_MAX_AGE_MS = 10 * 60 * 1000;
+
+export type GatewayVerdict =
+  | { ok: true }
+  | { ok: false; reason: 'bad-signature' | 'expired' | 'malformed' };
+
+/**
+ * Verify the signed redirect the customer arrives back on.
+ *
+ * Note what this does NOT establish: that the payment settled. The signature
+ * proves KPay produced the redirect; the customer still controls their browser
+ * and can replay an old one. The timestamp check bounds the replay window, and
+ * the caller must still confirm the status through the API before treating an
+ * order as paid.
+ */
+export function verifyGatewayReturn(
+  params: Partial<GatewayReturn>,
+  secret: string,
+  now: number = Date.now(),
+): GatewayVerdict {
+  const { status, reference, externalId, ts, sig } = params;
+  if (!status || !reference || !externalId || !ts || !sig) {
+    return { ok: false, reason: 'malformed' };
+  }
+
+  const timestamp = Number(ts);
+  if (!Number.isFinite(timestamp)) return { ok: false, reason: 'malformed' };
+
+  // Both directions: a future timestamp is as suspicious as an old one.
+  if (Math.abs(now - timestamp) > RETURN_MAX_AGE_MS) return { ok: false, reason: 'expired' };
+
+  const expected = createHmac('sha256', secret)
+    .update(`${status}|${reference}|${externalId}|${ts}`)
+    .digest('hex');
+
+  return equals(sig, expected) ? { ok: true } : { ok: false, reason: 'bad-signature' };
+}

@@ -1,0 +1,24 @@
+id: imgproxy
+name: imgproxy
+category: storage
+summary: On-the-fly image resizing and format conversion, signed URLs
+repo: https://github.com/imgproxy/imgproxy
+license: MIT
+flavors: [sisaas, platform]
+
+env:
+  - key: IMGPROXY_URL
+    value: "http://localhost:8082"
+  - key: IMGPROXY_KEY
+    comment: hex, see imgproxy docs
+  - key: IMGPROXY_SALT
+    comment: hex
+
+compose: compose.yml
+
+deploy:
+  image: darthsim/imgproxy:v3.30
+  port: 8080
+
+notes:
+  - Always set KEY and SALT and sign your URLs. An unsigned imgproxy is a free image-resizing service for the whole internet, at your expense.

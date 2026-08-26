@@ -1,0 +1,103 @@
+-- Subscriptions.
+--
+-- Designed around a constraint that card-shaped billing engines do not have:
+-- **Mobile Money cannot be charged silently.** There is no card on file. Every
+-- renewal is a REQUEST the customer approves on their phone, which means a
+-- subscription spends real time waiting for a human, and "payment failed" is
+-- usually "nobody pressed 1 yet".
+--
+-- That is why there is a `pending_payment` state and a grace period, rather than
+-- an immediate jump from active to past_due.
+
+CREATE TYPE "billing_interval" AS ENUM('month', 'year');--> statement-breakpoint
+CREATE TYPE "subscription_status" AS ENUM(
+  'trialing',        -- inside the trial, nothing charged yet
+  'pending_payment', -- renewal requested, waiting for the customer to approve
+  'active',          -- paid for the current period
+  'past_due',        -- the request was not approved; inside the grace window
+  'suspended',       -- grace exhausted; access cut, data kept
+  'cancelled'        -- ended, by the customer or by us
+);--> statement-breakpoint
+CREATE TYPE "invoice_status" AS ENUM('draft', 'awaiting_payment', 'paid', 'failed', 'void');--> statement-breakpoint
+
+CREATE TABLE "plans" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	-- Stable identifier used in code. The name can change; this must not.
+	"code" text NOT NULL UNIQUE,
+	"name" text NOT NULL,
+	"description" text,
+	-- Decimal, never a float.
+	"amount" numeric(20, 4) NOT NULL,
+	"currency" text NOT NULL,
+	"interval" "billing_interval" DEFAULT 'month' NOT NULL,
+	"trial_days" integer DEFAULT 0 NOT NULL,
+	-- What this plan unlocks. Read by the entitlement check.
+	"features" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	-- Retired plans stay: existing subscribers keep the terms they signed up on.
+	"active" boolean DEFAULT true NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+
+CREATE TABLE "subscriptions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"plan_id" uuid NOT NULL REFERENCES "plans"("id"),
+	"status" "subscription_status" DEFAULT 'trialing' NOT NULL,
+	"current_period_start" timestamp with time zone NOT NULL,
+	"current_period_end" timestamp with time zone NOT NULL,
+	"trial_ends_at" timestamp with time zone,
+	-- How long access survives a missed payment. Longer than a card business
+	-- would allow, because approving a USSD prompt needs the customer awake,
+	-- in coverage, and holding their phone.
+	"grace_until" timestamp with time zone,
+	"cancel_at_period_end" boolean DEFAULT false NOT NULL,
+	"cancelled_at" timestamp with time zone,
+	-- Where renewal requests are sent. Mobile Money needs a number, not a token.
+	"billing_phone" text,
+	"billing_email" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	-- One subscription per tenant. Multi-subscription billing is a different
+	-- product; allowing it by accident makes entitlement ambiguous.
+	CONSTRAINT "one_subscription_per_tenant" UNIQUE ("tenant_id")
+);--> statement-breakpoint
+CREATE INDEX "subscriptions_renewal_idx" ON "subscriptions" ("current_period_end")
+  WHERE "status" IN ('active', 'trialing', 'past_due');--> statement-breakpoint
+
+CREATE TABLE "subscription_invoices" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"subscription_id" uuid NOT NULL REFERENCES "subscriptions"("id") ON DELETE CASCADE,
+	"number" text NOT NULL UNIQUE,
+	"status" "invoice_status" DEFAULT 'draft' NOT NULL,
+	"amount" numeric(20, 4) NOT NULL,
+	"currency" text NOT NULL,
+	"period_start" timestamp with time zone NOT NULL,
+	"period_end" timestamp with time zone NOT NULL,
+	-- The provider's payment id, so a webhook can find its way back here.
+	"payment_reference" text,
+	-- How many times we have asked. Bounded, so a subscription cannot be dunned
+	-- forever.
+	"attempts" integer DEFAULT 0 NOT NULL,
+	"last_attempt_at" timestamp with time zone,
+	"paid_at" timestamp with time zone,
+	"failure_reason" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	-- One invoice per period. The guard against double-charging on a retried job.
+	CONSTRAINT "one_invoice_per_period" UNIQUE ("subscription_id", "period_start")
+);--> statement-breakpoint
+CREATE INDEX "invoices_tenant_idx" ON "subscription_invoices" ("tenant_id", "created_at");--> statement-breakpoint
+CREATE INDEX "invoices_payment_ref_idx" ON "subscription_invoices" ("payment_reference");--> statement-breakpoint
+
+-- Plans are shared across tenants, so they are NOT tenant-scoped.
+ALTER TABLE "subscriptions" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "subscriptions" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "subscriptions"
+	USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
+	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);--> statement-breakpoint
+
+ALTER TABLE "subscription_invoices" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "subscription_invoices" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "subscription_invoices"
+	USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
+	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);

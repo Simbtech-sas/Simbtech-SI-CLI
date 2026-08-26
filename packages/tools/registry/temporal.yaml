@@ -1,0 +1,72 @@
+id: temporal
+name: Temporal
+category: queue
+summary: Durable workflow execution for processes measured in days, wired to the event bus
+repo: https://github.com/temporalio/temporal
+license: MIT
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "@temporalio/client"
+    - "@temporalio/worker"
+    - "@temporalio/workflow"
+    - "@temporalio/common"
+  dev:
+    - "@temporalio/testing"
+
+env:
+  - key: TEMPORAL_ADDRESS
+    value: "localhost:7233"
+  - key: TEMPORAL_NAMESPACE
+    value: default
+  - key: TEMPORAL_TASK_QUEUE
+    comment: Defaults to the service name. One queue per service; workers poll their own.
+
+compose: compose.yml
+
+files:
+  - src: workflow-events.ts.hbs
+    dest: root:packages/events/src/workflows.ts
+  - src: workflow-signals.ts.hbs
+    dest: src/modules/temporal/domain/workflow-signals.ts
+  - src: temporal.spec.ts.hbs
+    dest: src/modules/temporal/domain/temporal.spec.ts
+  - src: temporal.client.ts.hbs
+    dest: src/modules/temporal/application/temporal.client.ts
+  - src: activities.ts.hbs
+    dest: src/modules/temporal/application/activities.ts
+  - src: temporal-worker.service.ts.hbs
+    dest: src/modules/temporal/application/temporal-worker.service.ts
+  - src: temporal.event-handlers.ts.hbs
+    dest: src/modules/temporal/application/temporal.event-handlers.ts
+  - src: tenant-onboarding.workflow.ts.hbs
+    dest: src/modules/temporal/workflows/tenant-onboarding.workflow.ts
+  - src: workflows-index.ts.hbs
+    dest: src/modules/temporal/workflows/index.ts
+  - src: activity-registry.service.ts.hbs
+    dest: src/modules/temporal/application/activity-registry.service.ts
+  - src: temporal.module.ts.hbs
+    dest: src/modules/temporal/temporal.module.ts
+  - src: tenant-onboarding.e2e-spec.ts.hbs
+    dest: test/e2e/tenant-onboarding.e2e-spec.ts
+
+register:
+  - anchor: events
+    snippet: "...WORKFLOW_EVENTS,"
+    import: "import { WORKFLOW_EVENTS } from './workflows.ts';\nexport * from './workflows.ts';"
+  - anchor: modules
+    snippet: "TemporalModule.forRoot({ run: false }),"
+    import: "import { TemporalModule } from './modules/temporal/temporal.module';"
+  - anchor: workerModules
+    snippet: "TemporalModule.forRoot({ run: true }),"
+    import: "import { TemporalModule } from './modules/temporal/temporal.module';"
+
+notes:
+  - "Kafka and Temporal are not alternatives. Kafka is fanout — this happened, many listeners. Temporal is orchestration — one process, many steps, over days. They meet at exactly two seams: an event STARTS or SIGNALS a workflow, and a workflow ANNOUNCES through the outbox."
+  - "A workflow never produces to Kafka directly. It calls an activity that writes an outbox row, so its announcements keep the same transactional guarantee as everything else — a direct produce would be retried by Temporal and published twice."
+  - "The workflow id is derived from the tenant, never generated. That is what makes an at-least-once event safe: a redelivery finds the run already going instead of starting a second seven-day process."
+  - "Workflow code is replayed on every worker restart, so it must be deterministic: no Date.now(), no Math.random(), no I/O. All of that goes in activities. `condition(fn, '7 days')` is the replay-safe way to wait."
+  - "The worker runs inside the existing background worker process, not a fourth deployable. The API holds a client and only ever starts and signals — an API replica polling the task queue would drop workflow tasks mid-deploy."
+  - "`pnpm test:e2e` runs the workflow against a REAL Temporal server with time skipping — a seven-day timer is proven in a second. Mocking a durable timer proves only that a mock was called."
+  - "Use it for processes measured in days, with human steps. BullMQ already covers jobs measured in seconds, and a Kafka consumer that cannot wait is the wrong tool for a seven-day timer."

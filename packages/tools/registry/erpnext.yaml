@@ -1,0 +1,30 @@
+id: erpnext
+name: ERPNext (Frappe)
+category: erp
+summary: Accounting, stock, manufacturing, HR and CRM on the Frappe framework
+repo: https://github.com/frappe/erpnext
+license: GPL-3.0
+flavors: [sisaas, platform]
+
+env:
+  - key: ERPNEXT_URL
+    value: "http://localhost:9820"
+  - key: ERPNEXT_API_KEY
+    comment: From User > API Access in ERPNext. Paired with the secret as `token key:secret`.
+  - key: ERPNEXT_API_SECRET
+
+compose: compose.yml
+
+deploy:
+  image: frappe/erpnext:v16.33.0
+  port: 8080
+  needsDatabase: true
+
+notes:
+  - "The Frappe org has ~40 repositories and most of them are NOT separate services. hrms, crm, helpdesk, lms, insights, raven, builder and wiki are APPS installed into this one bench: `bench get-app hrms && bench --site <site> install-app hrms`. Adding them as separate registry entries would mean eight containers that cannot run alone."
+  - "The rest of the org splits into the framework itself (frappe, bench, frappe_docker) and browser libraries (charts, gantt, datatable, frappe-ui) — npm packages, nothing to deploy. `si add frappe-charts` covers the one worth having."
+  - "Eleven containers and roughly 2GB. There is no smaller honest version: the framework needs a backend, a frontend, a websocket, two queue workers and a scheduler, plus MariaDB and two Redises with different roles."
+  - "MariaDB, not Postgres, and Frappe owns its schema through its own migrations. It is a system you integrate with over its REST API — never by writing to its tables."
+  - "Auth is `Authorization: token <key>:<secret>`, not a bearer token. A bearer prefix is a 401 that reads like a bad key."
+  - "GPL-3.0. Running it unmodified as a service is fine; distributing a modified ERPNext carries the copyleft obligation."
+  - "Emits webhooks (Settings > Webhook, per doctype). Bridge them with `si add integrations` and enable an `erpnext` source — confirm the header against your version first."

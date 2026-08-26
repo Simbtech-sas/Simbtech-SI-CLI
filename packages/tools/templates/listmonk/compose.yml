@@ -1,0 +1,27 @@
+services:
+  listmonk:
+    image: listmonk/listmonk:v5.0.3
+    restart: unless-stopped
+    depends_on:
+      - listmonk-postgres
+    environment:
+      LISTMONK_app__address: '0.0.0.0:9000'
+      LISTMONK_db__host: listmonk-postgres
+      LISTMONK_db__user: listmonk
+      LISTMONK_db__password: listmonk_dev_pwd
+      LISTMONK_db__database: listmonk
+    ports:
+      - '9010:9000'
+
+  listmonk-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: listmonk
+      POSTGRES_PASSWORD: listmonk_dev_pwd
+      POSTGRES_DB: listmonk
+    volumes:
+      - listmonk-data:/var/lib/postgresql/data
+
+volumes:
+  listmonk-data:

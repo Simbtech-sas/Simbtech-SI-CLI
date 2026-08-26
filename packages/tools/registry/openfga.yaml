@@ -1,0 +1,31 @@
+id: openfga
+name: OpenFGA
+category: auth
+summary: Relationship-based authorization (Google Zanzibar) for permissions the role enum cannot express
+repo: https://github.com/openfga/openfga
+license: Apache-2.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "@openfga/sdk"
+
+env:
+  - key: OPENFGA_URL
+    value: "http://localhost:8081"
+  - key: OPENFGA_STORE_ID
+    comment: Created on first run
+
+compose: compose.yml
+
+deploy:
+  image: openfga/openfga:v1.11.1
+  port: 8080
+  needsDatabase: true
+  env:
+    OPENFGA_DATASTORE_ENGINE: postgres
+    OPENFGA_DATASTORE_URI: "postgres://{{db.username}}:{{db.password}}@{{db.host}}:5432/{{db.name}}?sslmode=disable"
+
+notes:
+  - Dev uses in-memory storage — every restart is a clean slate. Switch to the postgres engine before it matters.
+  - Use it for sharing and hierarchy rules. Simple role checks belong in the existing RolesGuard.

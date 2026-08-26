@@ -1,0 +1,60 @@
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+import { Trend, Rate } from 'k6/metrics';
+
+const BASE = __ENV.K6_BASE_URL || 'http://localhost:8080';
+const EMAIL = __ENV.K6_EMAIL;
+const PASSWORD = __ENV.K6_PASSWORD;
+
+const loginTime = new Trend('login_duration');
+const errors = new Rate('errors');
+
+/**
+ * Thresholds are what make this a gate rather than a graph nobody reads. k6
+ * exits non-zero when one is breached, so CI fails on a regression.
+ */
+export const options = {
+  stages: [
+    { duration: '30s', target: 20 },  // ramp
+    { duration: '1m', target: 20 },   // hold
+    { duration: '30s', target: 0 },   // ramp down
+  ],
+  thresholds: {
+    http_req_failed: ['rate<0.01'],                 // <1% errors
+    http_req_duration: ['p(95)<500', 'p(99)<1500'], // tail latency, not the mean
+    login_duration: ['p(95)<1000'],                 // argon2 is deliberately slow
+    errors: ['rate<0.01'],
+  },
+};
+
+export function setup() {
+  if (!EMAIL || !PASSWORD) {
+    // Testing only unauthenticated routes measures the wrong thing: every real
+    // query runs inside a tenant context, and RLS adds a filter to each one.
+    throw new Error('set K6_EMAIL and K6_PASSWORD — an unauthenticated load test is not representative');
+  }
+  const res = http.post(`${BASE}/auth/login`, JSON.stringify({ email: EMAIL, password: PASSWORD }), {
+    headers: { 'Content-Type': 'application/json' },
+  });
+  loginTime.add(res.timings.duration);
+  check(res, { 'login succeeded': (r) => r.status === 200 });
+  return { token: res.json('accessToken') };
+}
+
+export default function (data) {
+  const headers = {
+    Authorization: `Bearer ${data.token}`,
+    'Content-Type': 'application/json',
+  };
+
+  const list = http.get(`${BASE}/widgets`, { headers });
+  const ok = check(list, {
+    'list returned 200': (r) => r.status === 200,
+    'list returned an array': (r) => Array.isArray(r.json()),
+  });
+  errors.add(!ok);
+
+  // Real users pause. Hammering with zero think time measures how fast you can
+  // saturate a connection pool, not how the system behaves under load.
+  sleep(Math.random() * 2 + 1);
+}

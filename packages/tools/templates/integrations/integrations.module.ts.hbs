@@ -1,0 +1,29 @@
+import { Global, Module } from '@nestjs/common';
+import { WebhookInbox } from './application/webhook-inbox.service';
+import { IntegrationAuditHandler } from './application/integration-audit.handler';
+import { ToolEndpoints } from './application/tool-endpoints';
+import { WebhookController } from './interface/webhook.controller';
+
+/**
+ * Imported tools, on the same event bus as everything else.
+ *
+ * Two directions, and they are not symmetric:
+ *
+ *   tool ──▶ POST /webhooks/:source ──▶ outbox ──▶ IntegrationEventReceived
+ *   app  ──▶ ToolEndpoints.call('medusa', '/store/orders')
+ *
+ * Inbound is events, because a tool announcing something has many possible
+ * readers and no idea who they are. Outbound is a direct call, because asking a
+ * specific tool a specific question over a broker is a request-response protocol
+ * built on a fan-out one.
+ *
+ * `@Global` so any feature can reach a tool or listen to one without importing
+ * this module — the same reason notifications and payments are global.
+ */
+@Global()
+@Module({
+  controllers: [WebhookController],
+  providers: [WebhookInbox, IntegrationAuditHandler, ToolEndpoints],
+  exports: [WebhookInbox, ToolEndpoints],
+})
+export class IntegrationsModule {}

@@ -1,0 +1,127 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { createHash } from 'node:crypto';
+import { IntegrationEventReceived } from '@{{brand}}/events';
+import { DatabaseService } from '../../../database/database.service';
+import { webhookDeliveries } from '../../../database/schema';
+import { OutboxService } from '../../events/application/outbox.service';
+import { findSource, readPath, verifySource, type WebhookSource } from '../domain/webhook-sources';
+
+export type InboxResult =
+  | { outcome: 'accepted' }
+  | { outcome: 'duplicate' }
+  | { outcome: 'unknown-source' }
+  | { outcome: 'not-configured' }
+  | { outcome: 'rejected' };
+
+/**
+ * The one door every imported tool comes in through.
+ *
+ * Medusa, Documenso, LiveKit, tusd and the rest all announce things by HTTP
+ * callback, each with its own signature scheme. Wiring each one to its own
+ * consumer is N integrations that drift; this turns all of them into the same
+ * Kafka event, so the rest of the system subscribes once.
+ *
+ * Three rules, and every webhook outage in history is one of them:
+ *
+ * 1. **Verify against the RAW body.** Re-serialising breaks the MAC.
+ * 2. **Answer fast.** Senders time out in seconds and retry. The work here is
+ *    one INSERT and one outbox row — everything real happens in a consumer.
+ * 3. **Be idempotent.** The same delivery WILL arrive twice.
+ */
+@Injectable()
+export class WebhookInbox {
+  private readonly log = new Logger(WebhookInbox.name);
+
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly outbox: OutboxService,
+  ) {}
+
+  async receive(
+    sourceId: string,
+    rawBody: Buffer,
+    headers: Record<string, unknown>,
+  ): Promise<InboxResult> {
+    const source = findSource(sourceId);
+    // A stranger probing the endpoint learns only that this path is not a source.
+    if (!source) return { outcome: 'unknown-source' };
+
+    const secret = process.env[source.secretEnv];
+    if (!secret) {
+      // Fail closed. An unverifiable webhook is an unauthenticated request that
+      // publishes events into the system.
+      this.log.error(`${source.secretEnv} is not set — refusing ${sourceId} webhooks`);
+      return { outcome: 'not-configured' };
+    }
+
+    const header = headers[source.header.toLowerCase()];
+    const headerValue = typeof header === 'string' ? header : undefined;
+    if (!verifySource(source, rawBody, headerValue, secret)) {
+      this.log.warn(`rejected a ${sourceId} webhook with an invalid signature`);
+      return { outcome: 'rejected' };
+    }
+
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
+    } catch {
+      return { outcome: 'rejected' };
+    }
+
+    const deliveryId = this.deliveryIdFor(source, rawBody, headers);
+    const event = readPath(body, source.eventPath) ?? 'unknown';
+
+    // Insert and publish in ONE transaction. The unique constraint is the
+    // idempotency guard: a redelivery inserts nothing, so it publishes nothing,
+    // and the database and every consumer stay idempotent together.
+    return this.database.requireAdminDb().transaction(async (tx) => {
+      const inserted = await tx
+        .insert(webhookDeliveries)
+        .values({ source: source.id, deliveryId, event, payload: body })
+        .onConflictDoNothing()
+        .returning({ id: webhookDeliveries.id });
+
+      if (inserted.length === 0) {
+        this.log.log(`${sourceId}/${event} ${deliveryId} already received`);
+        return { outcome: 'duplicate' } as InboxResult;
+      }
+
+      await this.outbox.publish(tx, IntegrationEventReceived, {
+        aggregateId: `${source.id}:${deliveryId}`,
+        // No tenant: the tool does not know about ours. A consumer that needs
+        // one resolves it from the payload, where it can be checked.
+        tenantId: null,
+        payload: {
+          source: source.id,
+          event,
+          deliveryId,
+          receivedAt: new Date().toISOString(),
+          data: body,
+        },
+      });
+
+      this.log.log(`${sourceId}/${event} accepted`);
+      return { outcome: 'accepted' } as InboxResult;
+    });
+  }
+
+  /**
+   * A delivery id, from the tool if it sends one and from the body if not.
+   *
+   * The body hash is a weaker guarantee and worth naming: two genuinely
+   * identical events — the same webhook fired twice for real — collapse into
+   * one. For tools that send no id that is still the better failure: processing
+   * a payment webhook twice costs more than missing a duplicate notification.
+   */
+  private deliveryIdFor(
+    source: WebhookSource,
+    rawBody: Buffer,
+    headers: Record<string, unknown>,
+  ): string {
+    if (source.deliveryIdHeader) {
+      const value = headers[source.deliveryIdHeader.toLowerCase()];
+      if (typeof value === 'string' && value.length > 0) return value;
+    }
+    return `sha256:${createHash('sha256').update(rawBody).digest('hex')}`;
+  }
+}

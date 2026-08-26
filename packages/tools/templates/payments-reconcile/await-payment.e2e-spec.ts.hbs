@@ -1,0 +1,111 @@
+import path from 'node:path';
+import { TestWorkflowEnvironment } from '@temporalio/testing';
+import { Worker } from '@temporalio/worker';
+import { awaitPayment, paymentResolved } from '../../src/modules/payments-reconcile/workflows/await-payment.workflow';
+
+/**
+ * Against a REAL Temporal server, with time skipping — so the 24-hour give-up
+ * path is proven in a second rather than mocked.
+ */
+jest.setTimeout(120_000);
+
+const payment = {
+  provider: 'kpay',
+  reference: 'KPAY-TEST-1',
+  tenantId: '11111111-1111-1111-1111-111111111111',
+  amount: '15000',
+  currency: 'XAF',
+};
+
+describe('awaiting a payment', () => {
+  let env: TestWorkflowEnvironment;
+  beforeAll(async () => {
+    env = await TestWorkflowEnvironment.createTimeSkipping();
+  });
+  afterAll(async () => env?.teardown());
+
+  const worker = (activities: Record<string, (...args: never[]) => unknown>) =>
+    Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: 'test',
+      workflowsPath: path.resolve(__dirname, '../../src/modules/temporal/workflows/index.ts'),
+      activities,
+    });
+
+  it('exits on the webhook signal without ever polling', async () => {
+    // The happy path must cost nothing. If this polls, every payment in
+    // production makes a needless provider call inside the rate limit.
+    let polls = 0;
+    const w = await worker({
+      async pollPaymentStatus() { polls++; return 'pending'; },
+      async applyPolledOutcome() { return true; },
+    });
+    const result = await w.runUntil(async () => {
+      const handle = await env.client.workflow.start(awaitPayment, {
+        workflowId: 'p1', taskQueue: 'test', args: [payment],
+      });
+      await handle.signal(paymentResolved, 'settled');
+      return handle.result();
+    });
+    expect(result).toBe('settled');
+    expect(polls).toBe(0);
+  });
+
+  it('finds a settled payment whose webhook never arrived', async () => {
+    // The reason this exists: the money moved, the webhook did not.
+    const applied: unknown[][] = [];
+    const w = await worker({
+      async pollPaymentStatus() { return 'settled'; },
+      async applyPolledOutcome(_p: never, state: never, after: never) {
+        applied.push([state, typeof after]);
+        return true;
+      },
+    });
+    const result = await w.runUntil(
+      env.client.workflow.execute(awaitPayment, { workflowId: 'p2', taskQueue: 'test', args: [payment] }),
+    );
+    expect(result).toBe('settled');
+    expect(applied).toEqual([['settled', 'number']]);
+  });
+
+  it('stops polling once it has an answer', async () => {
+    let polls = 0;
+    const w = await worker({
+      async pollPaymentStatus() { polls++; return 'failed'; },
+      async applyPolledOutcome() { return true; },
+    });
+    await w.runUntil(
+      env.client.workflow.execute(awaitPayment, { workflowId: 'p3', taskQueue: 'test', args: [payment] }),
+    );
+    expect(polls).toBe(1);
+  });
+
+  it('gives up after a day rather than polling forever, and does not guess', async () => {
+    // Still pending after 24 hours means nobody paid. Marking it failed would be
+    // a claim the provider never made, so nothing is applied.
+    let applied = 0;
+    const w = await worker({
+      async pollPaymentStatus() { return 'pending'; },
+      async applyPolledOutcome() { applied++; return true; },
+    });
+    const result = await w.runUntil(
+      env.client.workflow.execute(awaitPayment, { workflowId: 'p4', taskQueue: 'test', args: [payment] }),
+    );
+    expect(result).toBe('abandoned');
+    expect(applied).toBe(0);
+  });
+
+  it('accepts a late webhook that arrives while a poll is in flight', async () => {
+    // The race is real: the poll and the webhook can resolve the same payment at
+    // the same instant. `applyPolledOutcome` returning false means the webhook
+    // won, and that must not keep the workflow polling.
+    const w = await worker({
+      async pollPaymentStatus() { return 'settled'; },
+      async applyPolledOutcome() { return false; },
+    });
+    const result = await w.runUntil(
+      env.client.workflow.execute(awaitPayment, { workflowId: 'p5', taskQueue: 'test', args: [payment] }),
+    );
+    expect(result).toBe('settled');
+  });
+});

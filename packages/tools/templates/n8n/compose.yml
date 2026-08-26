@@ -1,0 +1,16 @@
+services:
+  n8n:
+    image: n8nio/n8n:2.37.4
+    restart: unless-stopped
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: '5678'
+      N8N_SECURE_COOKIE: 'false'
+      GENERIC_TIMEZONE: UTC
+    ports:
+      - '5678:5678'
+    volumes:
+      - n8n-data:/home/node/.n8n
+
+volumes:
+  n8n-data:

@@ -1,0 +1,16 @@
+-- Password reset tokens.
+--
+-- Stored HASHED, exactly like refresh tokens: a database leak must not hand the
+-- attacker a working reset link for every account.
+CREATE TABLE "password_reset_tokens" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" uuid NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+	"token_hash" text NOT NULL UNIQUE,
+	"expires_at" timestamp with time zone NOT NULL,
+	-- Single use. Set on redemption; a second attempt finds it non-null and fails.
+	"used_at" timestamp with time zone,
+	"requested_ip" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+CREATE INDEX "password_reset_user_idx" ON "password_reset_tokens" ("user_id");--> statement-breakpoint
+CREATE INDEX "password_reset_expires_idx" ON "password_reset_tokens" ("expires_at");

@@ -1,0 +1,31 @@
+import { index, jsonb, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+
+/**
+ * Every webhook delivery an imported tool has made.
+ *
+ * Deliberately NOT tenant-scoped and NOT RLS-protected: a third-party tool knows
+ * nothing about our tenants, so a delivery belongs to the integration, not to a
+ * customer. Whatever the event turns into downstream is tenant-scoped; this row
+ * is the doorbell, not the visitor.
+ *
+ * The unique constraint is the whole point. Every webhook system on earth retries,
+ * so `(source, delivery_id)` is what makes the second delivery a no-op.
+ */
+export const webhookDeliveries = pgTable(
+  'webhook_deliveries',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    source: text('source').notNull(),
+    /** The tool's own id, or a SHA-256 of the body when it sends none. */
+    deliveryId: text('delivery_id').notNull(),
+    event: text('event').notNull(),
+    /** Kept for replay and for arguing with a vendor about what they actually sent. */
+    payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('webhook_deliveries_source_delivery').on(t.source, t.deliveryId),
+    index('webhook_deliveries_received_idx').on(t.receivedAt),
+  ],
+);

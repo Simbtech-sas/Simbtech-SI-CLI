@@ -1,0 +1,76 @@
+id: payments-kpay
+kind: feature
+name: KPay payments
+category: finance
+summary: Mobile Money, card and PayPal across 12 African countries — USSD push or hosted page
+repo: https://admin.kpay.site
+license: UNLICENSED
+flavors: [sisaas]
+requires: [payments-core]
+
+env:
+  - key: KPAY_BASE_URL
+    value: https://admin.kpay.site
+  - key: KPAY_API_KEY
+    comment: "kpay_test_… in development, kpay_live_… in production. The PREFIX picks the environment; the URL never changes."
+  - key: KPAY_SECRET_KEY
+    comment: 64 hex characters, no prefix. Server-side only — never ships to a client.
+  - key: KPAY_WEBHOOK_SECRET
+    comment: Verifies X-KPAY-Signature over the RAW request body
+  - key: KPAY_GATEWAY_SECRET
+    comment: Verifies the signed return redirect. A DIFFERENT secret from the webhook one.
+  - key: KPAY_DEFAULT_MODE
+    value: ussd
+    comment: ussd (direct phone prompt) or gateway (hosted payment link). Per-request override allowed.
+
+migrations:
+  - src: migration.sql.hbs
+    name: kpay_payments
+
+files:
+  - src: schema.ts.hbs
+    dest: src/database/schema/kpay.ts
+  - src: providers.ts.hbs
+    dest: src/modules/kpay/domain/providers.ts
+  - src: money.ts.hbs
+    dest: src/modules/kpay/domain/money.ts
+  - src: signatures.ts.hbs
+    dest: src/modules/kpay/domain/signatures.ts
+  - src: kpay.types.ts.hbs
+    dest: src/modules/kpay/domain/kpay.types.ts
+  - src: kpay.client.ts.hbs
+    dest: src/modules/kpay/domain/kpay.client.ts
+  - src: kpay.service.ts.hbs
+    dest: src/modules/kpay/application/kpay.service.ts
+  - src: kpay-payments.repository.ts.hbs
+    dest: src/modules/kpay/infrastructure/kpay-payments.repository.ts
+  - src: kpay.controller.ts.hbs
+    dest: src/modules/kpay/interface/kpay.controller.ts
+  - src: kpay.module.ts.hbs
+    dest: src/modules/kpay/kpay.module.ts
+  - src: kpay.provider.ts.hbs
+    dest: src/modules/kpay/application/kpay.provider.ts
+  - src: kpay.spec.ts.hbs
+    dest: src/modules/kpay/domain/kpay.spec.ts
+
+register:
+  - anchor: schema
+    snippet: "export * from './kpay';"
+  - anchor: modules
+    snippet: KpayModule,
+    import: "import { KpayModule } from './modules/kpay/kpay.module';"
+  # The WORKER too. Billing renewals and payment reconciliation run there, and a
+  # @Global module still has to be imported into the graph it is global to — the
+  # worker is a separate Nest application, not the API with extra providers.
+  - anchor: workerModules
+    snippet: KpayModule,
+    import: "import { KpayModule } from './modules/kpay/kpay.module';"
+
+notes:
+  - "The KEY PREFIX selects the environment, not the URL. A kpay_live_ key outside production moves real money — the client refuses that combination at boot."
+  - "TWO different HMAC secrets: the webhook signs the RAW body, the gateway return signs `status|reference|externalId|ts`. Mixing them gives a verifier that accepts nothing, or everything."
+  - "A valid return signature is NOT proof of payment — the customer controls their browser and can replay it. Confirm through GET /payments/:id before marking anything paid. The webhook is authoritative."
+  - "Only COMPLETED, FAILED and CANCELLED are decisions. Marking an order paid on PROCESSING is the classic double-fulfilment bug."
+  - "Amounts follow the provider's decimals: XAF and XOF are whole units, M-Pesa and several others take two. Sending 1050 where 10.50 is meant is a 100x overcharge, so the conversion refuses rather than rounds."
+  - "Card and PayPal have no USSD equivalent — requesting them always opens the hosted page, even when the app is set to USSD."
+  - "Refunds are full-amount only within 7 days, and the original fee is not returned."

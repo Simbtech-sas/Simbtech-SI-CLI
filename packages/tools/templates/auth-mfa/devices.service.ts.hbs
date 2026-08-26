@@ -1,0 +1,104 @@
+import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common';
+import { and, desc, eq, isNull } from 'drizzle-orm';
+import { DatabaseService } from '../../../database/database.service';
+import { userDevices, users } from '../../../database/schema';
+import { MfaService, sessionHash } from './mfa.service';
+import { AuditService } from '../../audit/application/audit.service';
+
+/**
+ * Sessions, as a person understands them: "Chrome, Douala, 3 minutes ago".
+ *
+ * Requirement 4.7 is device management, and the useful form is not an inventory
+ * of hardware — it is being able to see a session you do not recognise and end
+ * it.
+ */
+@Injectable()
+export class DevicesService {
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly mfa: MfaService,
+    private readonly audit: AuditService,
+  ) {}
+
+  /** Called on login and on refresh, so `lastSeenAt` means something. */
+  async seen(
+    userId: string,
+    refreshToken: string,
+    meta: { ip?: string; userAgent?: string },
+  ): Promise<void> {
+    const hash = sessionHash(refreshToken);
+    await this.database
+      .requireAdminDb()
+      .insert(userDevices)
+      .values({
+        userId,
+        sessionHash: hash,
+        ipAddress: meta.ip ?? null,
+        userAgent: meta.userAgent?.slice(0, 300) ?? null,
+        label: describe(meta.userAgent),
+      })
+      .onConflictDoUpdate({
+        target: userDevices.sessionHash,
+        set: { lastSeenAt: new Date() },
+      });
+  }
+
+  async list(userId: string) {
+    return this.database
+      .requireAdminDb()
+      .select({
+        id: userDevices.id,
+        label: userDevices.label,
+        ipAddress: userDevices.ipAddress,
+        lastSeenAt: userDevices.lastSeenAt,
+        trusted: userDevices.trusted,
+      })
+      .from(userDevices)
+      .where(and(eq(userDevices.userId, userId), isNull(userDevices.revokedAt)))
+      .orderBy(desc(userDevices.lastSeenAt));
+  }
+
+  /**
+   * End a session.
+   *
+   * Scoped to the caller's own user id, always. Without that scope, an id from
+   * a request body ends somebody else's session.
+   */
+  async revoke(userId: string, deviceId: string): Promise<{ revoked: boolean }> {
+    const updated = await this.database
+      .requireAdminDb()
+      .update(userDevices)
+      .set({ revokedAt: new Date() })
+      .where(and(eq(userDevices.id, deviceId), eq(userDevices.userId, userId)))
+      .returning({ id: userDevices.id });
+
+    if (updated.length === 0) throw new NotFoundException('no such device');
+    await this.audit.recordPlatformEvent({
+      actorUserId: userId,
+      action: 'session.revoked',
+      targetType: 'device',
+      targetId: deviceId,
+    });
+    return { revoked: true };
+  }
+
+  /** Disabling MFA needs the password, so a stolen session cannot do it. */
+  async disableMfaWithPassword(userId: string, password: string): Promise<void> {
+    const [user] = await this.database
+      .requireAdminDb()
+      .select({ passwordHash: users.passwordHash })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!user?.passwordHash) throw new UnauthorizedException('password required');
+    await this.mfa.disable(userId, user.passwordHash, password);
+  }
+}
+
+/** A readable label. Not parsing: a user recognises "Chrome on Android". */
+function describe(userAgent?: string): string {
+  if (!userAgent) return 'Unknown device';
+  const browser = /Firefox\/|Edg\/|Chrome\/|Safari\//.exec(userAgent)?.[0]?.replace(/\/$/, '');
+  const platform = /Android|iPhone|iPad|Windows|Macintosh|Linux/.exec(userAgent)?.[0];
+  return [browser ?? 'Browser', platform].filter(Boolean).join(' on ');
+}

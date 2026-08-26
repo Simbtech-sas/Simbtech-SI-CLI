@@ -1,0 +1,58 @@
+services:
+  bigcapital:
+    image: bigcapitalhq/server:v0.25.34
+    restart: unless-stopped
+    depends_on: [bigcapital-mysql, bigcapital-redis]
+    environment:
+      DB_HOST: bigcapital-mysql
+      DB_USER: bigcapital
+      DB_PASSWORD: bigcapital_dev_pwd
+      DB_CHARSET: utf8
+      SYSTEM_DB_NAME: bigcapital_system
+      TENANT_DB_NAME_PERFIX: bigcapital_tenant_
+      REDIS_HOST: bigcapital-redis
+      REDIS_PORT: '6379'
+      QUEUE_HOST: bigcapital-redis
+      QUEUE_PORT: '6379'
+      # Dev value. In production this signs session tokens for an accounting
+      # system — generate it, never inherit this one.
+      JWT_SECRET: bigcapital_dev_jwt_secret_change_me
+      BASE_URL: http://localhost:9800
+      # It renders invoices to PDF through Gotenberg, which this registry
+      # already ships. `si add gotenberg` and they share one renderer instead of
+      # running two.
+      GOTENBERG_URL: http://gotenberg:3000
+      MAIL_HOST: mailpit
+      MAIL_PORT: '1025'
+      MAIL_FROM_NAME: Bigcapital
+      MAIL_FROM_ADDRESS: no-reply@{{brand}}.local
+    ports:
+      - '9810:3000'
+
+  bigcapital-webapp:
+    image: bigcapitalhq/webapp:v0.25.34
+    restart: unless-stopped
+    depends_on: [bigcapital]
+    ports:
+      - '9800:80'
+
+  # Its own MariaDB. Bigcapital creates a DATABASE PER TENANT at runtime, so it
+  # needs CREATE DATABASE on its server — a right you do not hand a bought-in
+  # tool on the cluster that holds your own data.
+  bigcapital-mysql:
+    image: mariadb:11.8
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: bigcapital_root_dev_pwd
+      MARIADB_DATABASE: bigcapital_system
+      MARIADB_USER: bigcapital
+      MARIADB_PASSWORD: bigcapital_dev_pwd
+    volumes:
+      - bigcapital-mysql-data:/var/lib/mysql
+
+  bigcapital-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+volumes:
+  bigcapital-mysql-data:

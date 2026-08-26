@@ -1,0 +1,30 @@
+import { createHmac, timingSafeEqual } from 'node:crypto';
+
+/**
+ * `X-Webhook-Signature: sha256=<hex>` — HMAC-SHA256 over the RAW request body,
+ * keyed with the API key's webhook secret.
+ *
+ * One deliberate difference from the sample in the JoonaPay documentation: that
+ * sample calls `timingSafeEqual` on two buffers without comparing lengths first,
+ * and Node THROWS on a length mismatch. A one-character signature therefore
+ * produces a 500 instead of a 401 — and an unhandled throw inside a webhook
+ * handler is a denial-of-service lever pointed at your own payment pipeline.
+ */
+function equals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+export function verifyWebhookSignature(
+  rawBody: Buffer | string,
+  signature: string | undefined,
+  secret: string,
+): boolean {
+  if (!signature) return false;
+  const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
+  // The header is prefixed; the MAC is not. Compare the MACs.
+  const received = signature.startsWith('sha256=') ? signature.slice(7) : signature;
+  return equals(received, expected);
+}

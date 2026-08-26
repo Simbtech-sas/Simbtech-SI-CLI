@@ -1,0 +1,41 @@
+import { Module, type DynamicModule } from '@nestjs/common';
+import { TemporalClient } from './application/temporal.client';
+import { ActivityRegistry } from './application/activity-registry.service';
+import { TemporalWorker } from './application/temporal-worker.service';
+import { TemporalEventHandlers } from './application/temporal.event-handlers';
+
+/**
+ * Durable workflows.
+ *
+ * `run` mirrors `EventsModule.forRoot({ consume })`: the API starts and signals
+ * workflows, the WORKER executes them. An API replica polling the task queue
+ * would pick up workflow tasks and drop them halfway through a rolling deploy,
+ * so it never polls — it only ever asks.
+ */
+export interface TemporalModuleOptions {
+  /** True in the worker process, false in the API. */
+  run: boolean;
+}
+
+@Module({})
+export class TemporalModule {
+  static forRoot(options: TemporalModuleOptions): DynamicModule {
+    return {
+      module: TemporalModule,
+      // Global, so a feature that owns workflows injects TemporalClient without
+      // importing this module. Importing it again would call forRoot() a second
+      // time, and a second TemporalEventHandlers would register every handler
+      // twice — which EventRegistry refuses at boot, correctly and fatally.
+      global: true,
+      providers: [
+        TemporalClient,
+        // Global-ish by construction: a feature registers its activities here,
+        // and the worker — wherever it runs — picks them up.
+        ActivityRegistry,
+        TemporalEventHandlers,
+        ...(options.run ? [TemporalWorker] : []),
+      ],
+      exports: [TemporalClient, ActivityRegistry, TemporalEventHandlers],
+    };
+  }
+}

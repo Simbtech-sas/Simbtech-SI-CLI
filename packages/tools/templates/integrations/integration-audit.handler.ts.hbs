@@ -1,0 +1,43 @@
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { IntegrationEventReceived } from '@{{brand}}/events';
+import { EventRegistry } from '../../events/application/event-registry.service';
+import { AuditService } from '../../audit/application/audit.service';
+
+/**
+ * Every verified tool event, in the audit log.
+ *
+ * This exists so the bridge is not publishing into a void: without a single
+ * listener, `IntegrationEventReceived` is a topic nothing reads, and a webhook
+ * that was accepted, recorded and published looks identical to one that was
+ * never sent.
+ *
+ * It is deliberately the dullest possible consumer — it makes no decisions and
+ * needs no tool installed. Real reactions are registered with
+ * `onIntegrationEvent`, which narrows the payload; this one only records that
+ * something arrived, so "did Documenso ever call us?" has an answer.
+ */
+@Injectable()
+export class IntegrationAuditHandler implements OnModuleInit {
+  private readonly log = new Logger(IntegrationAuditHandler.name);
+
+  constructor(
+    private readonly registry: EventRegistry,
+    private readonly audit: AuditService,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.on(IntegrationEventReceived, 'audit', async ({ payload }) => {
+      // A platform event, not a tenant one: a third-party tool knows nothing
+      // about our tenants, so attributing the delivery to one would be a guess.
+      await this.audit.recordPlatformEvent({
+        action: `integration.${payload.source}.${payload.event}`,
+        targetType: payload.source,
+        targetId: payload.deliveryId,
+        // The body is already stored whole in `webhook_deliveries`; duplicating
+        // it here would put a vendor's payload — and whatever personal data it
+        // carries — into an append-only table that cannot be redacted.
+        metadata: { receivedAt: payload.receivedAt },
+      });
+    });
+  }
+}

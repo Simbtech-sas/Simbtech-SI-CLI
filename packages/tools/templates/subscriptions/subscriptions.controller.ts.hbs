@@ -1,0 +1,47 @@
+import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { createZodDto } from 'nestjs-zod';
+import { z } from 'zod';
+import { AccessGuard } from '../../auth/interface/access.guard';
+import { CurrentPrincipal } from '../../auth/interface/current-principal.decorator';
+import type { AccessTokenPayload } from '../../auth/domain/jwt-payload';
+import { Roles } from '../../auth/interface/roles.guard';
+import { SubscriptionsService } from '../application/subscriptions.service';
+
+class SubscribeDto extends createZodDto(
+  z.object({
+    planCode: z.string().min(1).max(64),
+    // Where a Mobile Money renewal request is sent. Without it every renewal
+    // needs a payment link the customer has to open.
+    billingPhone: z.string().min(6).max(20).optional(),
+    billingEmail: z.string().email().optional(),
+  }),
+) {}
+
+@Controller('billing')
+@UseGuards(AccessGuard)
+export class SubscriptionsController {
+  constructor(private readonly subs: SubscriptionsService) {}
+
+  /** The tenant's own subscription. Tenant id from the token, never the body. */
+  @Get('subscription')
+  current(@CurrentPrincipal() p: AccessTokenPayload) {
+    return this.subs.current(p.tenantId);
+  }
+
+  /** Only an owner changes what the tenant pays. */
+  @Post('subscribe')
+  @Roles('owner')
+  subscribe(@CurrentPrincipal() p: AccessTokenPayload, @Body() dto: SubscribeDto) {
+    return this.subs.start({ tenantId: p.tenantId, ...dto });
+  }
+
+  /**
+   * Cancel at period end by default. Access continues to the date already paid
+   * for — cutting it immediately is charging for time nobody gets.
+   */
+  @Post('cancel')
+  @Roles('owner')
+  cancel(@CurrentPrincipal() p: AccessTokenPayload) {
+    return this.subs.cancel(p.tenantId, false);
+  }
+}

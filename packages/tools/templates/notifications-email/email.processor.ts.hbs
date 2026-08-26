@@ -1,0 +1,62 @@
+import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Logger } from '@nestjs/common';
+import type { Job } from 'bullmq';
+import { createTransport, type Transporter } from 'nodemailer';
+import { AppConfigService } from '../../../config/app-config.service';
+import { renderTemplate } from '../domain/templates';
+import { EMAIL_QUEUE, type EmailJob } from './mailer.service';
+
+/**
+ * Sends what the API queued. Runs in the worker, so a slow provider never
+ * occupies an HTTP connection.
+ *
+ * Failures retry with exponential backoff and then land in the failed set —
+ * visible, replayable, and not silently swallowed.
+ */
+@Processor(EMAIL_QUEUE)
+export class EmailProcessor extends WorkerHost {
+  private readonly log = new Logger(EmailProcessor.name);
+  private transporter?: Transporter;
+
+  constructor(private readonly config: AppConfigService) {
+    super();
+  }
+
+  private transport(): Transporter {
+    if (!this.transporter) {
+      const smtp = this.config.smtp;
+      if (!smtp) throw new Error('SMTP is not configured');
+      this.transporter = createTransport({
+        host: smtp.host,
+        port: smtp.port,
+        // STARTTLS on 587, implicit TLS on 465. Mailpit in dev speaks neither.
+        secure: smtp.port === 465,
+        auth: smtp.user && smtp.pass ? { user: smtp.user, pass: smtp.pass } : undefined,
+      });
+    }
+    return this.transporter;
+  }
+
+  async process(job: Job<EmailJob>): Promise<void> {
+    const { to, template, data, attachments } = job.data;
+    const rendered = renderTemplate(template, data as never);
+    const smtp = this.config.smtp!;
+
+    await this.transport().sendMail({
+      from: `"${smtp.fromName}" <${smtp.from}>`,
+      to,
+      subject: rendered.subject,
+      text: rendered.text,
+      html: rendered.html,
+      attachments: attachments?.map((a) => ({
+        filename: a.filename,
+        content: Buffer.from(a.contentBase64, 'base64'),
+        contentType: a.contentType,
+      })),
+    });
+
+    // The address is deliberately absent from the log line: a log aggregator is
+    // a lower-trust store than the database, and this is personal data.
+    this.log.log(`sent "${template}"${attachments?.length ? ` +${attachments.length} attachment(s)` : ''} (job ${job.id})`);
+  }
+}

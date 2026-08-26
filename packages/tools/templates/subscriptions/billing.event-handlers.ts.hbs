@@ -1,0 +1,217 @@
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import {
+  InvoiceIssued,
+  InvoicePaid,
+  PaymentFailed,
+  PaymentSettled,
+  SubscriptionPaymentFailed,
+  SubscriptionPaymentRequested,
+  SubscriptionSuspended,
+  TrialEnding,
+} from '@{{brand}}/events';
+import { AppConfigService } from '../../../config/app-config.service';
+import { EventRegistry } from '../../events/application/event-registry.service';
+import { MailerService } from '../../notifications/application/mailer.service';
+import { SubscriptionsService } from './subscriptions.service';
+import type { InvoiceDocument } from '../../notifications/domain/documents';
+
+/**
+ * Billing tells people what happened — over events, not over a method call.
+ *
+ * The processor that suspends a subscription does not know an email exists. It
+ * writes a fact to the outbox; this handler turns that fact into a message. Two
+ * things follow, and both are the reason for the indirection:
+ *
+ * - A mail server outage cannot roll back a suspension, and a suspension that
+ *   commits cannot lose its notification — the event is durable in the outbox.
+ * - Moving notifications into their own service later changes where this file
+ *   lives and nothing else. Same contracts, same handlers.
+ *
+ * Handlers run INSIDE the transaction that marks the event processed, so a
+ * crash between "sent" and "recorded as sent" cannot happen. Queueing the mail
+ * is the unit of work here; the SMTP conversation happens in the worker.
+ */
+@Injectable()
+export class BillingEventHandlers implements OnModuleInit {
+  private readonly log = new Logger(BillingEventHandlers.name);
+
+  constructor(
+    private readonly registry: EventRegistry,
+    private readonly mailer: MailerService,
+    private readonly subs: SubscriptionsService,
+    private readonly config: AppConfigService,
+  ) {}
+
+  /**
+   * Mobile Money has no link to click — the prompt arrives on the phone. Saying
+   * so beats a "Pay now" button that does nothing for most of the customers.
+   */
+  private hintFor(payUrl?: string): string | undefined {
+    return payUrl ? undefined : 'A payment prompt has been sent to your phone. Approve it to continue.';
+  }
+
+  onModuleInit(): void {
+    // ── money arriving closes the loop ───────────────────────────────────────
+    // The provider's webhook became PaymentSettled; that settles the invoice,
+    // which extends the period and publishes InvoicePaid, which sends the
+    // receipt below. Subscriptions never learn which provider was used, and the
+    // payment module never learns that subscriptions exist.
+    this.registry.on(PaymentSettled, 'settle-invoice', async ({ payload }) => {
+      // `settleInvoice` only moves an invoice that is still awaiting payment,
+      // so a redelivered payment webhook extends the period exactly once.
+      const settled = await this.subs.settleInvoice(payload.reference, true);
+      if (settled) this.log.log(`payment ${payload.reference} settled a subscription invoice`);
+    });
+
+    this.registry.on(PaymentFailed, 'fail-invoice', async ({ payload }) => {
+      await this.subs.settleInvoice(payload.reference, false, payload.reason ?? undefined);
+    });
+
+    this.registry.on(TrialEnding, 'notify', async ({ payload }) => {
+      if (!payload.billingEmail) return;
+      await this.mailer.send({
+        to: payload.billingEmail,
+        template: 'trial-ending',
+        data: {
+          name: null,
+          tenantName: payload.tenantName,
+          planName: payload.planName,
+          amount: payload.amount,
+          currency: payload.currency,
+          daysLeft: payload.daysLeft,
+        },
+      });
+    });
+
+    this.registry.on(SubscriptionPaymentRequested, 'notify', async ({ payload }) => {
+      if (!payload.billingEmail) return;
+      await this.mailer.send({
+        to: payload.billingEmail,
+        template: 'payment-requested',
+        data: {
+          name: null,
+          tenantName: payload.tenantName,
+          planName: payload.planName,
+          amount: payload.amount,
+          currency: payload.currency,
+          dueDate: payload.dueDate,
+          attempt: payload.attempt,
+          daysUntilSuspension: payload.daysUntilSuspension,
+          payUrl: payload.payUrl,
+          ussdHint: this.hintFor(payload.payUrl),
+        },
+      });
+    });
+
+    this.registry.on(SubscriptionPaymentFailed, 'notify', async ({ payload }) => {
+      if (!payload.billingEmail) return;
+      await this.mailer.send({
+        to: payload.billingEmail,
+        template: 'payment-failed',
+        data: {
+          name: null,
+          tenantName: payload.tenantName,
+          planName: payload.planName,
+          amount: payload.amount,
+          currency: payload.currency,
+          reason: payload.reason ?? undefined,
+          daysUntilSuspension: payload.daysUntilSuspension,
+          payUrl: payload.payUrl,
+          ussdHint: this.hintFor(payload.payUrl),
+        },
+      });
+    });
+
+    this.registry.on(SubscriptionSuspended, 'notify', async ({ payload }) => {
+      if (!payload.billingEmail) return;
+      await this.mailer.send({
+        to: payload.billingEmail,
+        template: 'subscription-suspended',
+        data: {
+          name: null,
+          tenantName: payload.tenantName,
+          planName: payload.planName,
+          amount: payload.amount,
+          currency: payload.currency,
+          payUrl: payload.payUrl,
+          ussdHint: this.hintFor(payload.payUrl),
+          supportEmail: this.config.supportEmail,
+        },
+      });
+    });
+
+    // Invoice and receipt both carry the document itself. An email that says
+    // "your invoice is available, log in to see it" is one the finance
+    // department cannot file.
+    this.registry.on(InvoiceIssued, 'send-invoice', async ({ payload, occurredAt }) => {
+      if (!payload.billingEmail) return;
+      await this.mailer.sendDocument(
+        {
+          to: payload.billingEmail,
+          template: 'invoice',
+          data: {
+            name: null,
+            tenantName: payload.tenantName,
+            planName: payload.planName,
+            amount: payload.amount,
+            currency: payload.currency,
+            number: payload.number,
+            dueDate: payload.dueDate,
+            payUrl: payload.payUrl,
+            ussdHint: this.hintFor(payload.payUrl),
+          },
+        },
+        this.document('invoice', payload, occurredAt, new Date(payload.dueDate)),
+      );
+      this.log.log(`invoice ${payload.number} sent`);
+    });
+
+    this.registry.on(InvoicePaid, 'send-receipt', async ({ payload }) => {
+      if (!payload.billingEmail) return;
+      const paidAt = new Date(payload.paidAt);
+      await this.mailer.sendDocument(
+        {
+          to: payload.billingEmail,
+          template: 'receipt',
+          data: {
+            name: null,
+            tenantName: payload.tenantName,
+            number: payload.number,
+            amount: payload.amount,
+            currency: payload.currency,
+            paidAt: paidAt.toISOString().slice(0, 10),
+            reference: payload.paymentReference,
+          },
+        },
+        {
+          ...this.document('receipt', payload, paidAt),
+          paidAt,
+          paymentReference: payload.paymentReference,
+        },
+      );
+      this.log.log(`receipt ${payload.number} sent`);
+    });
+  }
+
+  private document(
+    kind: 'invoice' | 'receipt',
+    payload: { number: string; planName: string; amount: string; currency: string; tenantName: string; billingEmail: string | null },
+    issuedAt: Date,
+    dueAt?: Date,
+  ): InvoiceDocument {
+    const seller = this.config.seller;
+    return {
+      kind,
+      number: payload.number,
+      issuedAt,
+      dueAt,
+      currency: payload.currency,
+      from: { name: seller.name, address: seller.address, taxId: seller.taxId, email: seller.email },
+      to: { name: payload.tenantName, email: payload.billingEmail ?? undefined },
+      lines: [{ description: payload.planName, unitAmount: payload.amount }],
+      // Unset means no tax line is printed at all — better than printing 0% and
+      // implying a rate was considered.
+      taxRate: seller.taxRate,
+    };
+  }
+}

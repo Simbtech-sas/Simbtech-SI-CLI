@@ -1,0 +1,60 @@
+import { boolean, index, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { tenants } from './tenants';
+
+export const kpayStatus = pgEnum('kpay_status', [
+  'PENDING',
+  'PROCESSING',
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'REFUNDED',
+]);
+
+export const kpayKind = pgEnum('kpay_kind', ['payment', 'withdrawal', 'refund']);
+
+/**
+ * Our record of every KPay transaction.
+ *
+ * KPay owns the STATUS; this table owns what the payment was FOR. Without it
+ * there is no way to map a KPay reference back to an order, and no way to make
+ * a redelivered webhook idempotent.
+ */
+export const kpayPayments = pgTable(
+  'kpay_payments',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    kind: kpayKind('kind').notNull().default('payment'),
+    /** KPay's id. Unique — this is what makes redelivery a no-op. */
+    kpayPaymentId: text('kpay_payment_id').notNull().unique(),
+    reference: text('reference').notNull(),
+    providerReference: text('provider_reference'),
+    externalId: text('external_id').notNull(),
+    status: kpayStatus('status').notNull().default('PENDING'),
+    /** Decimal, never a float. Covers integer XAF and 2-decimal providers alike. */
+    amount: numeric('amount', { precision: 20, scale: 4 }).notNull(),
+    netAmount: numeric('net_amount', { precision: 20, scale: 4 }),
+    feeAmount: numeric('fee_amount', { precision: 20, scale: 4 }),
+    currency: text('currency').notNull(),
+    provider: text('provider'),
+    country: text('country'),
+    phoneNumber: text('phone_number'),
+    paymentMethod: text('payment_method').$type<'mobile-money' | 'card' | 'paypal'>(),
+    mode: text('mode').$type<'ussd' | 'gateway'>(),
+    /** Settled with a test key. Test money must never be counted as revenue. */
+    isTest: boolean('is_test').notNull().default(false),
+    metadata: jsonb('metadata').$type<Record<string, unknown>>(),
+    failureReason: text('failure_reason'),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    unique('kpay_tenant_external').on(t.tenantId, t.externalId),
+    index('kpay_payments_tenant_idx').on(t.tenantId, t.createdAt),
+    index('kpay_payments_reference_idx').on(t.reference),
+  ],
+);

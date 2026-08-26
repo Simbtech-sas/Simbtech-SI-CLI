@@ -1,0 +1,79 @@
+import { selectProvider, type PaymentProvider, type ChargeRequest } from './payment-provider.port';
+
+function provider(over: Partial<PaymentProvider> & { id: string }): PaymentProvider {
+  return {
+    capabilities: {
+      autoCharge: false,
+      paymentLinks: true,
+      ussdPush: false,
+      methods: ['mobile-money'],
+      currencies: ['XAF'],
+      refunds: 'full',
+    },
+    charge: async () => ({ outcome: 'failed', reason: 'stub', retryable: false }),
+    get: async () => ({ reference: 'r', state: 'pending', amount: '0', currency: 'XAF' }),
+    refund: async () => ({ reference: 'r' }),
+    verifyWebhook: () => null,
+    ...over,
+  } as PaymentProvider;
+}
+
+const request = (over: Partial<ChargeRequest> = {}): ChargeRequest => ({
+  tenantId: 't1',
+  externalId: 'e1',
+  amount: '1000',
+  currency: 'XAF',
+  description: 'test',
+  ...over,
+});
+
+describe('provider selection', () => {
+  it('refuses when nothing is configured', () => {
+    expect(() => selectProvider([], request())).toThrow(/no payment provider/);
+  });
+
+  it('refuses a currency no provider settles, naming what IS configured', () => {
+    // The alternative is charging through a provider that cannot settle it, and
+    // finding out at reconciliation.
+    const xaf = provider({ id: 'kpay' });
+    expect(() => selectProvider([xaf], request({ currency: 'EUR' }))).toThrow(/no configured provider settles EUR/);
+    expect(() => selectProvider([xaf], request({ currency: 'EUR' }))).toThrow(/kpay/);
+  });
+
+  it('refuses a method the provider does not support', () => {
+    const mobileOnly = provider({ id: 'kpay' });
+    expect(() => selectProvider([mobileOnly], request({ method: 'card' }))).toThrow(/by card/);
+  });
+
+  it('routes by currency across two providers', () => {
+    // The real multi-provider case: Mobile Money in XAF, cards in EUR.
+    const kpay = provider({ id: 'kpay' });
+    const other = provider({
+      id: 'other',
+      capabilities: {
+        autoCharge: true,
+        paymentLinks: true,
+        ussdPush: false,
+        methods: ['card'],
+        currencies: ['EUR', 'USD'],
+        refunds: 'partial',
+      },
+    });
+    expect(selectProvider([kpay, other], request()).id).toBe('kpay');
+    expect(selectProvider([kpay, other], request({ currency: 'EUR', method: 'card' })).id).toBe('other');
+  });
+
+  it('prefers a provider that can actually push USSD', () => {
+    const linksOnly = provider({ id: 'links' });
+    const pusher = provider({
+      id: 'pusher',
+      capabilities: { ...provider({ id: 'x' }).capabilities, ussdPush: true },
+    });
+    expect(selectProvider([linksOnly, pusher], request({ mode: 'ussd' })).id).toBe('pusher');
+  });
+
+  it('falls back rather than failing when no provider pushes USSD', () => {
+    const linksOnly = provider({ id: 'links' });
+    expect(selectProvider([linksOnly], request({ mode: 'ussd' })).id).toBe('links');
+  });
+});

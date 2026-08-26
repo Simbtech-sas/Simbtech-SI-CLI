@@ -1,0 +1,24 @@
+id: directus
+name: Directus
+category: admin
+summary: Instant admin UI and REST/GraphQL API over an existing Postgres schema
+repo: https://github.com/directus/directus
+license: BSL-1.1
+flavors: [sisaas, platform]
+
+env:
+  - key: DIRECTUS_URL
+    value: "http://localhost:8055"
+
+compose: compose.yml
+
+deploy:
+  image: directus/directus:11
+  port: 8055
+  needsDatabase: true
+  ingress: true
+
+notes:
+  - "BSL-1.1, not OSI open source: free below a revenue threshold, otherwise commercial. Check before shipping."
+  - It connects as the OWNER role and therefore BYPASSES the tenant RLS policies. Treat it as an internal admin tool only.
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `directus` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

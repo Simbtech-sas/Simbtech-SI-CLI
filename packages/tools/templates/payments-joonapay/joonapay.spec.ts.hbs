@@ -1,0 +1,112 @@
+import { createHmac } from 'node:crypto';
+import { verifyWebhookSignature } from './signatures';
+import { isTerminal, toPaymentState } from './joonapay.types';
+import {
+  readCheckoutUrl,
+  requireHttps,
+  toJoonapayAmount,
+} from '../application/joonapay.provider';
+
+const SECRET = 'whsec_test_0123456789abcdef';
+const BODY = JSON.stringify({
+  event: 'payment.completed',
+  data: { reference: 'GGUWWIMRJHHF', amount: 5000, currency: 'XOF', status: 'SUCCESS' },
+});
+const sign = (body: string, secret = SECRET) =>
+  'sha256=' + createHmac('sha256', secret).update(body).digest('hex');
+
+describe('webhook signature', () => {
+  it('accepts a genuine signature', () => {
+    expect(verifyWebhookSignature(BODY, sign(BODY), SECRET)).toBe(true);
+  });
+
+  it('accepts the bare hex without the sha256= prefix', () => {
+    expect(verifyWebhookSignature(BODY, sign(BODY).slice(7), SECRET)).toBe(true);
+  });
+
+  it('rejects a body altered by one character', () => {
+    const signature = sign(BODY);
+    const tampered = BODY.replace('5000', '5001');
+    expect(verifyWebhookSignature(tampered, signature, SECRET)).toBe(false);
+  });
+
+  it('rejects a signature made with a different secret', () => {
+    expect(verifyWebhookSignature(BODY, sign(BODY, 'other'), SECRET)).toBe(false);
+  });
+
+  it('rejects a missing signature rather than defaulting to trust', () => {
+    expect(verifyWebhookSignature(BODY, undefined, SECRET)).toBe(false);
+  });
+
+  it('returns false — does NOT throw — on a short signature', () => {
+    // The sample in the JoonaPay docs calls timingSafeEqual without a length
+    // check, and Node throws on mismatched lengths. That turns a forged header
+    // into a 500 and hands an attacker a way to break the payment pipeline.
+    expect(() => verifyWebhookSignature(BODY, 'sha256=ab', SECRET)).not.toThrow();
+    expect(verifyWebhookSignature(BODY, 'sha256=ab', SECRET)).toBe(false);
+  });
+});
+
+describe('status mapping', () => {
+  it('maps both vocabularies for the same outcome', () => {
+    // REST says completed, the webhook says SUCCESS, same payment.
+    expect(toPaymentState('completed')).toBe('settled');
+    expect(toPaymentState('SUCCESS')).toBe('settled');
+  });
+
+  it('treats expired as cancelled, not failed', () => {
+    // Nothing went wrong and no money moved — the customer never paid. Calling
+    // it a failure sends dunning mail to people who were never charged.
+    expect(toPaymentState('expired')).toBe('cancelled');
+  });
+
+  it('maps a status it has never seen to pending, never to settled', () => {
+    expect(toPaymentState('some_new_status')).toBe('pending');
+  });
+
+  it('does not treat processing as a decision', () => {
+    expect(isTerminal(toPaymentState('processing'))).toBe(false);
+    expect(isTerminal(toPaymentState('SUCCESS'))).toBe(true);
+  });
+});
+
+describe('amounts', () => {
+  it('passes a whole XOF amount through', () => {
+    expect(toJoonapayAmount('5000', 'XOF')).toBe(5000);
+  });
+
+  it('refuses a fraction in a currency that has no minor unit', () => {
+    // 50.50 XOF is not half a franc short — it is a number the rail cannot
+    // represent, and rounding it silently is a decision the merchant never made.
+    expect(() => toJoonapayAmount('50.50', 'XOF')).toThrow(/no minor unit/);
+  });
+
+  it('allows decimals where the currency has them', () => {
+    expect(toJoonapayAmount('50.50', 'EUR')).toBe(50.5);
+  });
+
+  it('refuses zero and negative amounts', () => {
+    expect(() => toJoonapayAmount('0', 'XOF')).toThrow(/invalid amount/);
+    expect(() => toJoonapayAmount('-100', 'XOF')).toThrow(/invalid amount/);
+  });
+});
+
+describe('callback URLs', () => {
+  it('refuses http:// before JoonaPay does', () => {
+    // A redirected POST arrives as a GET, so an http:// webhook URL silently
+    // stops delivering.
+    expect(() => requireHttps('http://example.com/hook', 'webhook_url')).toThrow(/https/);
+    expect(requireHttps('https://example.com/hook', 'webhook_url')).toBe('https://example.com/hook');
+  });
+});
+
+describe('checkout URL', () => {
+  it('finds the URL under any of the plausible field names', () => {
+    expect(readCheckoutUrl({ checkout_url: 'https://pay.joonapay.com/x' })).toBe('https://pay.joonapay.com/x');
+    expect(readCheckoutUrl({ payment_url: 'https://pay.joonapay.com/y' })).toBe('https://pay.joonapay.com/y');
+  });
+
+  it('fails loudly, listing what did arrive, rather than redirecting to undefined', () => {
+    expect(() => readCheckoutUrl({ reference: 'GGUWWIMRJHHF' })).toThrow(/Fields present: reference/);
+  });
+});

@@ -1,0 +1,212 @@
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+
+/**
+ * Which imported tools may post to `/webhooks/:source`, and how each one proves
+ * it is really them.
+ *
+ * A code file rather than env-encoded config: a source is a signature scheme, a
+ * header name and an encoding, and squeezing that into a comma-separated string
+ * makes a typo look like an attack. Secrets still come from the environment —
+ * only the SHAPE lives here.
+ *
+ * Add a source when you `si add` the tool that needs one. An unlisted source
+ * gets a 404, which is the correct answer to a stranger probing the endpoint.
+ */
+export type SignatureScheme =
+  /** HMAC-SHA256 over the raw body, hex. The most common by far. */
+  | 'hmac-sha256-hex'
+  /** Same, base64. Used by Slack-descended tooling and Keycloak plugins. */
+  | 'hmac-sha256-base64'
+  /** No signature: a shared secret compared constant-time. Weaker — see below. */
+  | 'bearer-token'
+  /**
+   * A signed JWT whose `sha256` claim is a hash of the body. LiveKit's scheme,
+   * and unlike `bearer-token` it DOES detect tampering — the token is bound to
+   * this body, not just to the sender.
+   */
+  | 'livekit-jwt';
+
+export interface WebhookSource {
+  /** Path segment and event `source`. Lowercase, no slashes. */
+  id: string;
+  scheme: SignatureScheme;
+  /** Header carrying the signature or token. */
+  header: string;
+  /** Env var holding the secret. Absent from the environment disables the source. */
+  secretEnv: string;
+  /**
+   * Header carrying the tool's delivery id, used to make redelivery a no-op.
+   * When the tool sends none, the body hash is used instead.
+   */
+  deliveryIdHeader?: string;
+  /** Where in the body the tool's event name lives. Dotted path. */
+  eventPath?: string;
+  /**
+   * Some tools prefix the signature (`sha256=…`). Stripped before comparison,
+   * because comparing the prefixed form against a bare MAC never matches and
+   * the usual "fix" is to stop verifying.
+   */
+  stripPrefix?: string;
+}
+
+export const WEBHOOK_SOURCES: readonly WebhookSource[] = [
+  // ── verified against each vendor's own documentation ───────────────────────
+  //
+  // Documenso sends the secret ITSELF in the header, not an HMAC of the body.
+  // That is their scheme, so `bearer-token` is correct here — and it means a
+  // Documenso delivery is authenticated but not tamper-evident. Their published
+  // example also calls timingSafeEqual without a length check, which throws;
+  // ours compares lengths first.
+  {
+    id: 'documenso',
+    scheme: 'bearer-token',
+    header: 'x-documenso-secret',
+    secretEnv: 'DOCUMENSO_WEBHOOK_SECRET',
+    eventPath: 'event',
+  },
+  // LiveKit signs a JWT whose `sha256` claim is a hash of the body. NOT a shared
+  // token: comparing the header to a secret would reject every delivery.
+  {
+    id: 'livekit',
+    scheme: 'livekit-jwt',
+    header: 'authorization',
+    secretEnv: 'LIVEKIT_API_SECRET',
+    eventPath: 'event',
+  },
+
+  // ── NOT verified — enable only after checking the vendor's current docs ────
+  // The header name and encoding below are plausible, not confirmed. A wrong
+  // header fails closed (401), which is the safe direction but looks like an
+  // outage.
+  //
+  // { id: 'medusa', scheme: 'hmac-sha256-hex', header: 'x-medusa-signature', secretEnv: 'MEDUSA_WEBHOOK_SECRET', eventPath: 'event' },
+  // { id: 'tusd',   scheme: 'hmac-sha256-hex', header: 'x-signature',        secretEnv: 'TUSD_HOOK_SECRET',      eventPath: 'Type' },
+  // { id: 'n8n',    scheme: 'hmac-sha256-hex', header: 'x-n8n-signature',    secretEnv: 'N8N_WEBHOOK_SECRET',    eventPath: 'event' },
+];
+
+export function findSource(id: string): WebhookSource | undefined {
+  return WEBHOOK_SOURCES.find((s) => s.id === id);
+}
+
+/** Constant-time comparison. `===` on a MAC leaks it one byte at a time. */
+function equals(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  // timingSafeEqual THROWS on a length mismatch, and an unhandled throw inside a
+  // webhook route is a denial-of-service lever pointed at your own pipeline.
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+/**
+ * Verify a delivery against the raw body.
+ *
+ * The raw bytes, never a re-serialised object: JSON.stringify changes key order,
+ * whitespace and number formatting, so the MAC stops matching.
+ */
+export function verifySource(
+  source: WebhookSource,
+  rawBody: Buffer | string,
+  headerValue: string | undefined,
+  secret: string,
+): boolean {
+  if (!headerValue) return false;
+
+  let received = headerValue;
+  if (source.stripPrefix && received.startsWith(source.stripPrefix)) {
+    received = received.slice(source.stripPrefix.length);
+  }
+
+  switch (source.scheme) {
+    case 'hmac-sha256-hex':
+      return equals(received, createHmac('sha256', secret).update(rawBody).digest('hex'));
+    case 'hmac-sha256-base64':
+      return equals(received, createHmac('sha256', secret).update(rawBody).digest('base64'));
+    case 'livekit-jwt':
+      return verifyLivekitToken(rawBody, headerValue, secret);
+    case 'bearer-token':
+      // Weaker than an HMAC: it proves the caller knows the secret, not that
+      // this particular body came from them, so it cannot detect tampering in
+      // transit. Only for tools that offer nothing better — LiveKit being the
+      // common one. Terminate TLS properly and keep the token short-lived.
+      return equals(received.replace(/^Bearer\s+/i, ''), secret);
+    default: {
+      const never: never = source.scheme;
+      throw new Error(`unhandled signature scheme ${String(never)}`);
+    }
+  }
+}
+
+/** Read a dotted path out of a parsed body. Returns undefined rather than throwing. */
+export function readPath(body: unknown, dotted: string | undefined): string | undefined {
+  if (!dotted) return undefined;
+  let cursor: unknown = body;
+  for (const key of dotted.split('.')) {
+    if (typeof cursor !== 'object' || cursor === null) return undefined;
+    cursor = (cursor as Record<string, unknown>)[key];
+  }
+  return typeof cursor === 'string' ? cursor : undefined;
+}
+
+/**
+ * LiveKit's webhook scheme: a JWT signed with the API secret, carrying a
+ * `sha256` claim that is a base64 hash of the raw body.
+ *
+ * Two checks, and both matter. The signature proves LiveKit sent it; the hash
+ * proves this is the body they sent. Skipping the hash leaves a valid token
+ * replayable against any payload an attacker likes.
+ *
+ * Verified with `node:crypto` rather than a JWT library. It is HS256 with a
+ * secret we already hold — an HMAC over two base64 segments — so the library
+ * would add a dependency, an ESM/CJS problem in the test runner, and nothing
+ * else. `jose` stays where it earns its place: JWKS and RS256 in the OIDC guard.
+ */
+export function verifyLivekitToken(
+  rawBody: Buffer | string,
+  authorization: string | undefined,
+  apiSecret: string,
+): boolean {
+  if (!authorization) return false;
+  const token = authorization.replace(/^Bearer\s+/i, '').trim();
+
+  const parts = token.split('.');
+  if (parts.length !== 3) return false;
+  const [head, body, signature] = parts as [string, string, string];
+
+  // ALGORITHM PINNED. Trusting the token's own `alg` is how `alg: none` and
+  // HS256-signed-with-the-RSA-public-key both work.
+  let header: { alg?: string };
+  try {
+    header = JSON.parse(b64urlDecode(head)) as { alg?: string };
+  } catch {
+    return false;
+  }
+  if (header.alg !== 'HS256') return false;
+
+  const expected = createHmac('sha256', apiSecret).update(`${head}.${body}`).digest();
+  if (!equals(signature, b64url(expected))) return false;
+
+  let claims: { sha256?: unknown; exp?: unknown; nbf?: unknown };
+  try {
+    claims = JSON.parse(b64urlDecode(body)) as typeof claims;
+  } catch {
+    return false;
+  }
+
+  // A signature that never expires is a signature an attacker can keep. LiveKit
+  // sets exp; a token without one is refused rather than trusted forever.
+  const now = Math.floor(Date.now() / 1000);
+  if (typeof claims.exp !== 'number' || claims.exp < now) return false;
+  if (typeof claims.nbf === 'number' && claims.nbf > now + 60) return false;
+
+  if (typeof claims.sha256 !== 'string') return false;
+  return equals(claims.sha256, createHash('sha256').update(rawBody).digest('base64'));
+}
+
+function b64url(buf: Buffer): string {
+  return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function b64urlDecode(value: string): string {
+  return Buffer.from(value.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+}

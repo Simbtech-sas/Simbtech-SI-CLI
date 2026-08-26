@@ -1,0 +1,54 @@
+import { z } from 'zod';
+import { IntegrationEventReceived } from '@{{brand}}/events';
+import type { EventEnvelope } from '@{{brand}}/events';
+import type { EventRegistry } from '../../events/application/event-registry.service';
+import type { TenantTx } from '../../../database/database.service';
+
+/**
+ * Listen to one imported tool's event, with a payload shape YOU own.
+ *
+ * The bridge cannot type a third party's JSON — Medusa and Documenso change
+ * their payloads on their own release schedule, and a hand-written schema for
+ * someone else's data is compile-time safety that does not exist. So the
+ * envelope is typed and `data` is not, and the narrowing happens HERE, at the
+ * one place that actually knows which fields it needs:
+ *
+ *   onIntegrationEvent(registry, 'medusa', 'order.placed',
+ *     z.object({ id: z.string(), total: z.number() }),
+ *     async (order, envelope, tx) => { ... });
+ *
+ * When their payload changes, this fails with a validation error naming the
+ * field. Without it, the handler silently takes a different branch.
+ */
+export function onIntegrationEvent<T extends z.ZodTypeAny>(
+  registry: EventRegistry,
+  source: string,
+  event: string,
+  schema: T,
+  handle: (data: z.infer<T>, envelope: EventEnvelope<unknown>, tx: TenantTx) => Promise<void>,
+): void {
+  // `source:event` as the handler name, so EventRegistry's duplicate check does
+  // the right thing: two handlers for the same tool event is almost always a
+  // copy-paste, and two for different events must both register.
+  registry.on(IntegrationEventReceived, `${source}:${event}`, async (envelope, tx) => {
+    const payload = envelope.payload;
+    // Every tool shares one topic and one contract, so each handler filters. The
+    // alternative is a topic per tool, which means a KafkaTopic per tool and a
+    // consumer rebalance every time somebody adds one.
+    if (payload.source !== source || payload.event !== event) return;
+
+    const parsed = schema.safeParse(payload.data);
+    if (!parsed.success) {
+      // Thrown, not swallowed: the delivery is already recorded and replayable,
+      // and a validation failure here means the vendor changed a payload we
+      // depend on. Silence would make that look like the event never arrived.
+      throw new Error(
+        `${source}/${event} payload did not match the expected shape: ${parsed.error.issues
+          .map((i) => `${i.path.join('.')} ${i.message}`)
+          .join('; ')}`,
+      );
+    }
+
+    await handle(parsed.data, envelope as EventEnvelope<unknown>, tx);
+  });
+}

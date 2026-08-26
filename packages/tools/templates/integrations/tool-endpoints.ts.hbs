@@ -1,0 +1,148 @@
+import { Injectable, Logger } from '@nestjs/common';
+
+/**
+ * Where the imported tools live, in one place.
+ *
+ * 29 of them expose an HTTP API and each declares a `*_URL` env key, but nothing
+ * read them — every caller would have reached for `process.env` on its own, and
+ * a typo becomes `fetch("undefined/api/...")` at runtime rather than a startup
+ * error.
+ *
+ * What this deliberately does NOT do is wrap 29 vendor APIs. Each has its own
+ * SDK, its own pagination and its own error shape, and a lowest-common-
+ * denominator client would be worse than `fetch` at all of them. This resolves
+ * the ADDRESS and the CREDENTIAL; the call is yours.
+ */
+export interface ToolEndpoint {
+  urlEnv: string;
+  tokenEnv?: string;
+  /**
+   * How the credential is sent, where it is known and uniform.
+   *
+   * Left undefined where the scheme is not a single header — Keycloak wants an
+   * OIDC token exchange, LiveKit signs a per-room JWT, Blnk signs the request.
+   * Guessing those produces a silent 401, so they are not guessed.
+   */
+  auth?: { header: string; prefix?: string };
+}
+
+/**
+ * Only the entries that do NOT follow `<ID>_URL`, plus the auth schemes that are
+ * a plain header. Everything else is derived, so adding a conventional tool
+ * needs no edit here — and a registry test fails if a new tool is neither
+ * conventional nor listed.
+ */
+const OVERRIDES: Record<string, ToolEndpoint> = {
+  'grafana-stack': { urlEnv: 'LOKI_URL' },
+  k6: { urlEnv: 'K6_BASE_URL' },
+  lago: { urlEnv: 'LAGO_API_URL', tokenEnv: 'LAGO_API_KEY', auth: { header: 'authorization', prefix: 'Bearer ' } },
+  langfuse: { urlEnv: 'LANGFUSE_HOST', tokenEnv: 'LANGFUSE_PUBLIC_KEY' },
+  maplibre: { urlEnv: 'MAP_STYLE_URL' },
+  medusa: { urlEnv: 'MEDUSA_BACKEND_URL', tokenEnv: 'MEDUSA_PUBLISHABLE_KEY', auth: { header: 'x-publishable-api-key' } },
+  meilisearch: { urlEnv: 'MEILI_URL', tokenEnv: 'MEILI_MASTER_KEY', auth: { header: 'authorization', prefix: 'Bearer ' } },
+  mosquitto: { urlEnv: 'MQTT_URL' },
+  novu: { urlEnv: 'NOVU_API_URL', tokenEnv: 'NOVU_SECRET_KEY', auth: { header: 'authorization', prefix: 'ApiKey ' } },
+  posthog: { urlEnv: 'POSTHOG_HOST', tokenEnv: 'POSTHOG_KEY' },
+  yjs: { urlEnv: 'YJS_WS_URL' },
+  typesense: { urlEnv: 'TYPESENSE_URL', tokenEnv: 'TYPESENSE_API_KEY', auth: { header: 'x-typesense-api-key' } },
+  unleash: { urlEnv: 'UNLEASH_URL', tokenEnv: 'UNLEASH_API_TOKEN', auth: { header: 'authorization' } },
+  documenso: { urlEnv: 'DOCUMENSO_URL', tokenEnv: 'DOCUMENSO_API_TOKEN', auth: { header: 'authorization', prefix: 'Bearer ' } },
+  listmonk: { urlEnv: 'LISTMONK_URL', tokenEnv: 'LISTMONK_API_TOKEN' },
+  calcom: { urlEnv: 'CALCOM_URL', tokenEnv: 'CALCOM_API_KEY' },
+  killbill: { urlEnv: 'KILLBILL_URL', tokenEnv: 'KILLBILL_API_KEY', auth: { header: 'x-killbill-apikey' } },
+};
+
+/**
+ * Tools you reach some other way, and the way you reach them.
+ *
+ * Not everything with an address speaks REST. Sending someone to
+ * `endpoints.call('temporal', ...)` and letting it fail on a missing
+ * `TEMPORAL_URL` teaches them nothing; naming the actual mechanism does.
+ */
+const NOT_REST: Record<string, string> = {
+  temporal: 'gRPC — use TemporalClient (TEMPORAL_ADDRESS), not an HTTP call',
+  zitadel: 'OIDC — ZITADEL_ISSUER drives the auth flow; the guard handles it',
+  keycloak: 'OIDC plus a token exchange for the admin API — use its SDK',
+  livekit: 'a per-room signed JWT, not a static credential — use the LiveKit SDK',
+  minio: 'S3 — the template already owns S3_ENDPOINT and its keys; use the storage module',
+  'sentry-glitchtip': 'SENTRY_DSN is SDK configuration; nothing calls it directly',
+  openreplay: 'the BROWSER posts to OPENREPLAY_INGEST_POINT; the server never does',
+  mosquitto: 'MQTT over MQTT_URL, not HTTP',
+  pglite: 'runs in-process; there is no server',
+  postgis: 'a Postgres extension, reached through your own database connection',
+  maplibre: 'a browser library',
+  yjs: 'a browser library over a websocket',
+  'browser-use': 'a Python CLI — run it as a job, there is no self-hosted HTTP API',
+};
+
+function endpointFor(id: string): ToolEndpoint {
+  return OVERRIDES[id] ?? { urlEnv: `${id.toUpperCase().replaceAll('-', '_')}_URL` };
+}
+
+@Injectable()
+export class ToolEndpoints {
+  private readonly log = new Logger(ToolEndpoints.name);
+
+  /**
+   * Base URL for a tool, trailing slash removed.
+   *
+   * Throws rather than returning undefined: a missing URL becomes
+   * `fetch("undefined/api/x")`, which fails as a DNS error somewhere far from
+   * the cause.
+   */
+  base(id: string): string {
+    const otherwise = NOT_REST[id];
+    if (otherwise) {
+      throw new Error(`"${id}" is not reached over REST: ${otherwise}`);
+    }
+    const { urlEnv } = endpointFor(id);
+    const value = process.env[urlEnv];
+    if (!value) {
+      // Throws rather than returning undefined: a missing URL becomes
+      // `fetch("undefined/api/x")`, which fails as a DNS error somewhere far
+      // from the cause.
+      throw new Error(`${urlEnv} is not set — "${id}" is installed but has no address`);
+    }
+    return value.replace(/\/+$/, '');
+  }
+
+  /** True when the tool is reachable — for a feature that degrades rather than fails. */
+  has(id: string): boolean {
+    if (NOT_REST[id]) return false;
+    return Boolean(process.env[endpointFor(id)!.urlEnv]);
+  }
+
+  token(id: string): string | undefined {
+    const { tokenEnv } = endpointFor(id);
+    return tokenEnv ? process.env[tokenEnv] : undefined;
+  }
+
+  /**
+   * Auth headers, where the scheme is a single known header.
+   *
+   * Returns `{}` for tools whose credential is not a header — that is not an
+   * oversight to fill in generically. LiveKit signs a per-room JWT and Keycloak
+   * needs a token exchange; both need their own SDK, and a wrong header is a 401
+   * that reads like a wrong key.
+   */
+  headers(id: string): Record<string, string> {
+    const { auth } = endpointFor(id);
+    const token = this.token(id);
+    if (!auth || !token) return {};
+    return { [auth.header]: `${auth.prefix ?? ''}${token}` };
+  }
+
+  /** `fetch` against a tool, with its base URL and header auth applied. */
+  call(id: string, path: string, init: RequestInit = {}): Promise<Response> {
+    return fetch(`${this.base(id)}${path.startsWith('/') ? path : `/${path}`}`, {
+      ...init,
+      headers: { ...this.headers(id), ...(init.headers as Record<string, string> | undefined) },
+      // A tool that hangs must not hold an API request open until the process dies.
+      signal: init.signal ?? AbortSignal.timeout(15_000),
+    });
+  }
+}
+
+/** Exported for the drift test in the registry package. */
+export const TOOL_ENDPOINT_OVERRIDES = OVERRIDES;
+export const TOOL_NOT_REST = NOT_REST;

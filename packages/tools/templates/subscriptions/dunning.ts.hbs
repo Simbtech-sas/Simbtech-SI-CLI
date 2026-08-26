@@ -1,0 +1,60 @@
+/**
+ * What happens when a renewal is not paid.
+ *
+ * Sized for Mobile Money, not for cards. A card retry can run hourly because
+ * nothing human is involved; a USSD prompt needs the customer awake, in
+ * coverage, and holding their phone. Retrying every hour would just be nagging,
+ * and suspending after a day would cut off people who were asleep.
+ */
+export interface DunningStep {
+  /** Days after the period ended. */
+  afterDays: number;
+  action: 'request-again' | 'warn' | 'suspend';
+  notify: boolean;
+}
+
+export const DUNNING_SCHEDULE: readonly DunningStep[] = [
+  { afterDays: 0, action: 'request-again', notify: true },  // the renewal itself
+  { afterDays: 2, action: 'request-again', notify: true },  // a working day later
+  { afterDays: 5, action: 'warn', notify: true },           // "access ends in 2 days"
+  { afterDays: 7, action: 'suspend', notify: true },        // access off, data kept
+];
+
+/** Total grace, in days, before access is cut. */
+export const GRACE_DAYS = DUNNING_SCHEDULE.at(-1)!.afterDays;
+
+/** How many days before a renewal to ask, so the customer has time to act. */
+export const RENEWAL_LEAD_DAYS = 3;
+
+/** Days before a trial ends that the customer is warned. */
+export const TRIAL_WARNING_DAYS = 3;
+
+/** The step due for an invoice this many days overdue, or null if none is. */
+export function stepFor(daysOverdue: number, attempts: number): DunningStep | null {
+  // Walk backwards to the latest step that is due, so a job that missed a run
+  // catches up instead of replaying every earlier step.
+  const due = [...DUNNING_SCHEDULE].reverse().find((s) => daysOverdue >= s.afterDays);
+  if (!due) return null;
+  // Bounded: the schedule has as many chances as it has steps, and no more.
+  if (attempts >= DUNNING_SCHEDULE.length) {
+    return { afterDays: due.afterDays, action: 'suspend', notify: true };
+  }
+  return due;
+}
+
+/** Add one billing interval, keeping the day of month where possible. */
+export function nextPeriodEnd(from: Date, interval: 'month' | 'year'): Date {
+  const next = new Date(from);
+  if (interval === 'year') {
+    next.setUTCFullYear(next.getUTCFullYear() + 1);
+    return next;
+  }
+
+  const day = next.getUTCDate();
+  next.setUTCMonth(next.getUTCMonth() + 1);
+  // A 31st becomes the 1st of the following month when the target is shorter.
+  // Clamp to the last day instead, so a subscription started on the 31st does
+  // not drift forward a day every short month.
+  if (next.getUTCDate() !== day) next.setUTCDate(0);
+  return next;
+}

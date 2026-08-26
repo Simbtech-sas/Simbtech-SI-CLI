@@ -1,0 +1,27 @@
+# Load tests
+
+```bash
+# Against your local stack
+K6_BASE_URL=http://localhost:8080 \
+K6_EMAIL=you@example.com K6_PASSWORD=... \
+  k6 run load/smoke.js
+```
+
+## Rules
+
+- **Staging, never production**, and never against infrastructure you do not own.
+  A load test against someone else's service is a denial-of-service attack.
+- **Authenticate.** Every real query runs inside a tenant context and RLS adds a
+  filter to each one. A test that skips auth measures a code path that does not
+  exist in production.
+- **Thresholds, not graphs.** `options.thresholds` makes k6 exit non-zero on a
+  regression, so this can gate a deploy. A load test whose only output is a chart
+  gets looked at once.
+- **Percentiles, not means.** p95 and p99 are what users feel. A mean of 100ms
+  hides a p99 of four seconds.
+
+## Where it belongs in CI
+
+Nightly against staging, not on every pull request — it takes minutes and needs a
+warm environment to mean anything. Wire it as a scheduled job and alert on the
+threshold failure.

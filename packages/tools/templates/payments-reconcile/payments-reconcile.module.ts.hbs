@@ -1,0 +1,14 @@
+import { Module } from '@nestjs/common';
+import { PaymentReconcileHandlers } from './application/payment-reconcile.handlers';
+
+/**
+ * Recovers a payment whose webhook never arrived.
+ *
+ * Registered in the WORKER, where events are consumed. It imports nothing:
+ * TemporalModule is global, and importing it here would call `forRoot()` a
+ * second time — two clients, and every Temporal event handler registered twice.
+ */
+@Module({
+  providers: [PaymentReconcileHandlers],
+})
+export class PaymentsReconcileModule {}

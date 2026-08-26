@@ -1,0 +1,158 @@
+import { createHash, createHmac } from 'node:crypto';
+import {
+  findSource,
+  readPath,
+  verifyLivekitToken,
+  verifySource,
+  type WebhookSource,
+} from './webhook-sources';
+
+const SECRET = 'whsec_integration_test_secret';
+const BODY = JSON.stringify({ event: 'order.placed', data: { id: 'order_1' } });
+
+const hmacSource: WebhookSource = {
+  id: 'medusa',
+  scheme: 'hmac-sha256-hex',
+  header: 'x-medusa-signature',
+  secretEnv: 'MEDUSA_WEBHOOK_SECRET',
+  eventPath: 'event',
+};
+
+const hex = (body: string, secret = SECRET) =>
+  createHmac('sha256', secret).update(body).digest('hex');
+
+describe('webhook signatures', () => {
+  it('accepts a genuine HMAC', () => {
+    expect(verifySource(hmacSource, BODY, hex(BODY), SECRET)).toBe(true);
+  });
+
+  it('rejects a body altered by one character', () => {
+    expect(verifySource(hmacSource, BODY.replace('order_1', 'order_2'), hex(BODY), SECRET)).toBe(false);
+  });
+
+  it('rejects a signature made with another secret', () => {
+    expect(verifySource(hmacSource, BODY, hex(BODY, 'other'), SECRET)).toBe(false);
+  });
+
+  it('rejects a missing header rather than defaulting to trust', () => {
+    expect(verifySource(hmacSource, BODY, undefined, SECRET)).toBe(false);
+  });
+
+  it('returns false — does NOT throw — on a short signature', () => {
+    // timingSafeEqual throws on a length mismatch, and an unhandled throw in a
+    // webhook route is a denial-of-service lever pointed at our own pipeline.
+    expect(() => verifySource(hmacSource, BODY, 'ab', SECRET)).not.toThrow();
+    expect(verifySource(hmacSource, BODY, 'ab', SECRET)).toBe(false);
+  });
+
+  it('strips a documented prefix before comparing', () => {
+    const prefixed: WebhookSource = { ...hmacSource, stripPrefix: 'sha256=' };
+    expect(verifySource(prefixed, BODY, `sha256=${hex(BODY)}`, SECRET)).toBe(true);
+    // Without stripping, the prefixed form never matches — and the usual "fix"
+    // for that is to stop verifying.
+    expect(verifySource(hmacSource, BODY, `sha256=${hex(BODY)}`, SECRET)).toBe(false);
+  });
+
+  it('handles base64 and bearer schemes', () => {
+    const b64: WebhookSource = { ...hmacSource, scheme: 'hmac-sha256-base64' };
+    expect(verifySource(b64, BODY, createHmac('sha256', SECRET).update(BODY).digest('base64'), SECRET)).toBe(true);
+
+    const bearer: WebhookSource = { ...hmacSource, scheme: 'bearer-token', header: 'authorization' };
+    expect(verifySource(bearer, BODY, `Bearer ${SECRET}`, SECRET)).toBe(true);
+    expect(verifySource(bearer, BODY, 'Bearer wrong-token-of-same-len', SECRET)).toBe(false);
+  });
+});
+
+describe('LiveKit webhooks', () => {
+  const SECRET = 'livekit_api_secret_value_1234567';
+  const body = JSON.stringify({ event: 'room_finished', room: { name: 'r1' } });
+  // Signed by hand rather than with `jose`. Two reasons: jose is ESM-only and a
+  // static import breaks this CJS suite, and a test that builds the token with
+  // the same library the code verifies it with proves less than one that does
+  // not.
+  const b64url = (v: string | Buffer) =>
+    Buffer.from(v).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const sign = (payloadHash: string, secret = SECRET) => {
+    const now = Math.floor(Date.now() / 1000);
+    const head = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const body = b64url(JSON.stringify({ sha256: payloadHash, iat: now, exp: now + 300 }));
+    const mac = createHmac('sha256', secret).update(`${head}.${body}`).digest();
+    return `${head}.${body}.${b64url(mac)}`;
+  };
+  const hash = (b: string) => createHash('sha256').update(b).digest('base64');
+
+  it('accepts a token whose sha256 claim matches the body', () => {
+    expect(verifyLivekitToken(body, `Bearer ${sign(hash(body))}`, SECRET)).toBe(true);
+  });
+
+  it('rejects a VALID token replayed against a different body', () => {
+    // The whole reason the hash claim is checked. Without it a genuine LiveKit
+    // token authenticates any payload an attacker substitutes.
+    const token = sign(hash(body));
+    const tampered = body.replace('r1', 'r2');
+    expect(verifyLivekitToken(tampered, `Bearer ${token}`, SECRET)).toBe(false);
+  });
+
+  it('rejects a token signed with another secret', () => {
+    expect(verifyLivekitToken(body, `Bearer ${sign(hash(body), 'other')}`, SECRET)).toBe(false);
+  });
+
+  it('rejects a missing or malformed header rather than throwing', () => {
+    expect(verifyLivekitToken(body, undefined, SECRET)).toBe(false);
+    expect(verifyLivekitToken(body, 'Bearer not-a-jwt', SECRET)).toBe(false);
+  });
+
+  it('refuses an expired token', () => {
+    // A signature that never expires is a signature an attacker can keep.
+    const past = Math.floor(Date.now() / 1000) - 60;
+    const head = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const claims = b64url(JSON.stringify({ sha256: hash(body), exp: past }));
+    const mac = createHmac('sha256', SECRET).update(`${head}.${claims}`).digest();
+    expect(verifyLivekitToken(body, `Bearer ${head}.${claims}.${b64url(mac)}`, SECRET)).toBe(false);
+  });
+
+  it('refuses alg:none, and refuses a token with no exp', () => {
+    // Trusting the token's own `alg` is how alg:none works. And a token with no
+    // expiry is one an attacker keeps forever.
+    const none = b64url(JSON.stringify({ alg: 'none', typ: 'JWT' }));
+    const claims = b64url(JSON.stringify({ sha256: hash(body), exp: Math.floor(Date.now() / 1000) + 300 }));
+    expect(verifyLivekitToken(body, `Bearer ${none}.${claims}.`, SECRET)).toBe(false);
+
+    const head = b64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
+    const noExp = b64url(JSON.stringify({ sha256: hash(body) }));
+    const mac = createHmac('sha256', SECRET).update(`${head}.${noExp}`).digest();
+    expect(verifyLivekitToken(body, `Bearer ${head}.${noExp}.${b64url(mac)}`, SECRET)).toBe(false);
+  });
+
+  it('goes through the ordinary source path too', () => {
+    const src: WebhookSource = {
+      id: 'livekit', scheme: 'livekit-jwt', header: 'authorization', secretEnv: 'LIVEKIT_API_SECRET',
+    };
+    expect(verifySource(src, body, `Bearer ${sign(hash(body))}`, SECRET)).toBe(true);
+    expect(verifySource(src, body, 'Bearer anything', SECRET)).toBe(false);
+  });
+});
+
+describe('source lookup', () => {
+  it('does not know a source nobody enabled', () => {
+    // An unlisted source is a 404, which is the right answer to a stranger.
+    expect(findSource('definitely-not-enabled')).toBeUndefined();
+  });
+
+  it('knows the sources verified against vendor docs', () => {
+    expect(findSource('documenso')?.scheme).toBe('bearer-token');
+    expect(findSource('livekit')?.scheme).toBe('livekit-jwt');
+  });
+});
+
+describe('event extraction', () => {
+  it('reads a dotted path', () => {
+    expect(readPath({ a: { b: 'x' } }, 'a.b')).toBe('x');
+  });
+
+  it('returns undefined instead of throwing on a missing path', () => {
+    expect(readPath({ a: 1 }, 'a.b.c')).toBeUndefined();
+    expect(readPath(null, 'a')).toBeUndefined();
+    expect(readPath({ a: 'x' }, undefined)).toBeUndefined();
+  });
+});

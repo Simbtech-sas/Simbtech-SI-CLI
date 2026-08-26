@@ -1,0 +1,84 @@
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { request } from 'undici';
+
+/**
+ * Blnk ledger client.
+ *
+ * Two rules this class exists to enforce:
+ *
+ * 1. **Money is a decimal string across this boundary.** Blnk's API accepts
+ *    numbers, but routing an amount through a JS `number` reintroduces the
+ *    floating-point error the ledger exists to prevent. Amounts stay strings.
+ * 2. **Every balance carries its tenant.** Blnk has no tenancy of its own, so
+ *    isolation is this class's job: the tenant id goes into `meta_data` on
+ *    creation and into the filter on every read.
+ */
+@Injectable()
+export class BlnkService {
+  private readonly baseUrl = process.env['BLNK_URL'] ?? 'http://localhost:5001';
+  private readonly secret = process.env['BLNK_SECRET_KEY'] ?? '';
+
+  private async call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
+    const res = await request(`${this.baseUrl}${path}`, {
+      method,
+      headers: {
+        'content-type': 'application/json',
+        'X-Blnk-Key': this.secret,
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (res.statusCode >= 400) {
+      throw new InternalServerErrorException(
+        `blnk ${method} ${path} failed: ${res.statusCode} ${await res.body.text()}`,
+      );
+    }
+    return (await res.body.json()) as T;
+  }
+
+  /** A ledger per tenant keeps one tenant's books from ever touching another's. */
+  createLedger(tenantId: string, name: string) {
+    return this.call<{ ledger_id: string }>('POST', '/ledgers', {
+      name,
+      meta_data: { tenant_id: tenantId },
+    });
+  }
+
+  createBalance(input: { tenantId: string; ledgerId: string; currency: string }) {
+    return this.call<{ balance_id: string }>('POST', '/balances', {
+      ledger_id: input.ledgerId,
+      currency: input.currency,
+      meta_data: { tenant_id: input.tenantId },
+    });
+  }
+
+  /**
+   * Record a transaction. `amount` is a decimal string — `'19.99'`, never 19.99.
+   * `reference` must be unique and idempotent: Blnk rejects a duplicate, which is
+   * what stops a retried HTTP call from double-charging.
+   */
+  recordTransaction(input: {
+    tenantId: string;
+    amount: string;
+    currency: string;
+    reference: string;
+    source: string;
+    destination: string;
+    description?: string;
+  }) {
+    return this.call<{ transaction_id: string; status: string }>('POST', '/transactions', {
+      amount: input.amount,
+      precision: 100,
+      currency: input.currency,
+      reference: input.reference,
+      source: input.source,
+      destination: input.destination,
+      description: input.description,
+      allow_overdraft: false,
+      meta_data: { tenant_id: input.tenantId },
+    });
+  }
+
+  getBalance(balanceId: string) {
+    return this.call<{ balance: string; currency: string }>('GET', `/balances/${balanceId}`);
+  }
+}

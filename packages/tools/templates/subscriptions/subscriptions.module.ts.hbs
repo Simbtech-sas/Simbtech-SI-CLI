@@ -1,0 +1,30 @@
+import { Module } from '@nestjs/common';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { SubscriptionsService } from './application/subscriptions.service';
+import { BillingProcessor } from './application/billing.processor';
+import { BillingEventHandlers } from './application/billing.event-handlers';
+import { ProviderBillingAdapter } from './infrastructure/provider-billing.adapter';
+import { SubscriptionsController } from './interface/subscriptions.controller';
+import { BILLING_PORT } from './domain/billing-port';
+
+/**
+ * Subscriptions, billed through whichever provider is bound to BILLING_PORT.
+ *
+ * The port is the swap point, and it names no provider: whatever `si new
+ * --payments` configured is what bills. What it CANNOT hide is
+ * `capabilities.autoCharge` — a provider that needs the customer present
+ * genuinely behaves differently, and the engine reads that flag rather than
+ * pretending.
+ */
+@Module({
+  imports: [NotificationsModule],
+  controllers: [SubscriptionsController],
+  providers: [
+    SubscriptionsService,
+    BillingProcessor,
+    BillingEventHandlers,
+    { provide: BILLING_PORT, useClass: ProviderBillingAdapter },
+  ],
+  exports: [SubscriptionsService],
+})
+export class SubscriptionsModule {}

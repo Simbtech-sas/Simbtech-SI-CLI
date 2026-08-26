@@ -1,0 +1,41 @@
+import { Injectable, Logger } from '@nestjs/common';
+
+/** Any object of activity implementations, as Temporal expects them. */
+export type ActivityBundle = Record<string, (...args: never[]) => unknown>;
+
+/**
+ * Where features add their activities.
+ *
+ * Self-registration rather than a list in the worker, for the same reason
+ * providers register themselves: adding a feature that owns workflows should
+ * mean adding a module, not editing a constructor here and remembering to keep
+ * it in sync.
+ *
+ * Registration happens in `onModuleInit`; the worker starts in
+ * `onApplicationBootstrap`, which Nest runs afterwards — so the set is complete
+ * before anything polls.
+ */
+@Injectable()
+export class ActivityRegistry {
+  private readonly log = new Logger(ActivityRegistry.name);
+  private readonly bundles = new Map<string, ActivityBundle>();
+
+  register(owner: string, activities: ActivityBundle): void {
+    if (this.bundles.has(owner)) throw new Error(`activities for "${owner}" registered twice`);
+    this.bundles.set(owner, activities);
+    this.log.log(`activities from ${owner}: ${Object.keys(activities).join(', ')}`);
+  }
+
+  all(): ActivityBundle {
+    const merged: ActivityBundle = {};
+    for (const [owner, bundle] of this.bundles) {
+      for (const [name, fn] of Object.entries(bundle)) {
+        // Two features claiming one activity name is a silent mix-up otherwise:
+        // the workflow calls what it thinks it called, and gets the other one.
+        if (merged[name]) throw new Error(`activity "${name}" is defined twice (${owner})`);
+        merged[name] = fn;
+      }
+    }
+    return merged;
+  }
+}

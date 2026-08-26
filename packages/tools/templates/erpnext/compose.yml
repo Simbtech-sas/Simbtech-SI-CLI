@@ -1,0 +1,139 @@
+# A Frappe bench. Eleven containers, and there is no smaller honest version: the
+# framework genuinely needs a backend, a frontend, a websocket, two queue workers
+# and a scheduler, plus MariaDB and two Redises with different roles.
+#
+# Budget roughly 2GB before you add anything to it.
+#
+# Written out per service rather than shared through a YAML anchor. A fragment is
+# merged INTO another document, and an `x-` anchor does not travel with the
+# services that reference it — the alias then resolves against nothing, and the
+# install fails in someone else's project. Verbose beats that.
+services:
+  # Writes common_site_config.json once, then exits. Nothing works before it has.
+  erpnext-configurator:
+    image: frappe/erpnext:v16.33.0
+    restart: 'no'
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-db, erpnext-redis-cache, erpnext-redis-queue]
+    entrypoint: ['bash', '-c']
+    command:
+      - >
+        bench set-config -g db_host erpnext-db;
+        bench set-config -gp db_port 3306;
+        bench set-config -g redis_cache redis://erpnext-redis-cache:6379;
+        bench set-config -g redis_queue redis://erpnext-redis-queue:6379;
+        bench set-config -g redis_socketio redis://erpnext-redis-queue:6379;
+        bench set-config -gp socketio_port 9000;
+
+  # Creates the site on first run. Add more Frappe apps here — hrms, crm,
+  # helpdesk, lms, insights and raven are APPS inside this bench, not separate
+  # services. See the notes on this registry entry.
+  erpnext-create-site:
+    image: frappe/erpnext:v16.33.0
+    restart: 'no'
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-configurator]
+    entrypoint: ['bash', '-c']
+    command:
+      - >
+        if [ ! -d "sites/{{brand}}.localhost" ]; then
+          bench new-site {{brand}}.localhost
+            --mariadb-user-host-login-scope='%'
+            --admin-password=admin
+            --db-root-password=admin
+            --install-app erpnext
+            --set-default;
+        fi
+
+  erpnext-backend:
+    image: frappe/erpnext:v16.33.0
+    restart: unless-stopped
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-create-site]
+
+  erpnext-frontend:
+    image: frappe/erpnext:v16.33.0
+    restart: unless-stopped
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-backend]
+    command: ['nginx-entrypoint.sh']
+    environment:
+      BACKEND: erpnext-backend:8000
+      SOCKETIO: erpnext-websocket:9000
+      FRAPPE_SITE_NAME_HEADER: '{{brand}}.localhost'
+      UPSTREAM_REAL_IP_ADDRESS: 127.0.0.1
+      UPSTREAM_REAL_IP_HEADER: X-Forwarded-For
+      UPSTREAM_REAL_IP_RECURSIVE: 'off'
+      PROXY_READ_TIMEOUT: '120'
+      CLIENT_MAX_BODY_SIZE: 50m
+    ports:
+      # 8080 is this project's own API, so the bench moves rather than the app
+      # you are building.
+      - '9820:8080'
+
+  erpnext-websocket:
+    image: frappe/erpnext:v16.33.0
+    restart: unless-stopped
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-backend]
+    command: ['node', '/home/frappe/frappe-bench/apps/frappe/socketio.js']
+
+  erpnext-queue-short:
+    image: frappe/erpnext:v16.33.0
+    restart: unless-stopped
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-backend]
+    command: ['bench', 'worker', '--queue', 'short,default']
+
+  erpnext-queue-long:
+    image: frappe/erpnext:v16.33.0
+    restart: unless-stopped
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-backend]
+    command: ['bench', 'worker', '--queue', 'long,default,short']
+
+  erpnext-scheduler:
+    image: frappe/erpnext:v16.33.0
+    restart: unless-stopped
+    volumes:
+      - erpnext-sites:/home/frappe/frappe-bench/sites
+    depends_on: [erpnext-backend]
+    command: ['bench', 'schedule']
+
+  erpnext-db:
+    image: mariadb:11.8
+    restart: unless-stopped
+    # Frappe requires these. Without them site creation fails on collation.
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --skip-character-set-client-handshake
+      - --skip-innodb-read-only-compressed
+    environment:
+      MARIADB_ROOT_PASSWORD: admin
+    volumes:
+      - erpnext-db-data:/var/lib/mysql
+
+  # Two, not one: the cache is disposable and the queue is not. Sharing them
+  # means a cache flush drops queued background jobs.
+  erpnext-redis-cache:
+    image: redis:6.2-alpine
+    restart: unless-stopped
+
+  erpnext-redis-queue:
+    image: redis:6.2-alpine
+    restart: unless-stopped
+    volumes:
+      - erpnext-redis-queue-data:/data
+
+volumes:
+  erpnext-sites:
+  erpnext-db-data:
+  erpnext-redis-queue-data:

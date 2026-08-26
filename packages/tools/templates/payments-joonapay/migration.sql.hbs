@@ -1,0 +1,47 @@
+-- Our record of every JoonaPay payment.
+--
+-- JoonaPay owns the payment's STATUS; this table owns what the payment was FOR.
+-- Without it, reference GGUWWIMRJHHF maps to nothing and a redelivered webhook
+-- fulfils an order twice.
+--
+-- The status enum uses the PORT's vocabulary, not JoonaPay's. JoonaPay speaks
+-- two — `completed` over REST, `SUCCESS` over webhooks, for the same payment —
+-- so storing whichever arrived first would leave the same outcome in two states.
+CREATE TYPE "joonapay_status" AS ENUM(
+  'pending', 'processing', 'settled', 'failed', 'cancelled', 'refunded'
+);--> statement-breakpoint
+
+CREATE TABLE "joonapay_payments" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	-- JoonaPay's payment_request_uuid. UNIQUE, and that is what makes webhook
+	-- redelivery a no-op instead of a second fulfilment.
+	"joonapay_uuid" text NOT NULL UNIQUE,
+	"reference" text NOT NULL,
+	-- Our id, sent as merchant_transaction_id. Unique per tenant.
+	"external_id" text NOT NULL,
+	"status" "joonapay_status" DEFAULT 'pending' NOT NULL,
+	-- Money as DECIMAL, never a float. XOF is a whole-unit currency; the scale
+	-- is there for the currencies that are not.
+	"amount" numeric(20, 4) NOT NULL,
+	"paid_amount" numeric(20, 4),
+	"currency" text NOT NULL,
+	"country_uuid" text,
+	"checkout_url" text,
+	-- true when settled with a pk_test_ key. Recorded, not inferred.
+	"is_test" boolean DEFAULT false NOT NULL,
+	"metadata" jsonb,
+	"failure_reason" text,
+	"settled_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "joonapay_tenant_external" UNIQUE ("tenant_id", "external_id")
+);--> statement-breakpoint
+CREATE INDEX "joonapay_payments_tenant_idx" ON "joonapay_payments" ("tenant_id", "created_at");--> statement-breakpoint
+CREATE INDEX "joonapay_payments_reference_idx" ON "joonapay_payments" ("reference");--> statement-breakpoint
+
+ALTER TABLE "joonapay_payments" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "joonapay_payments" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "joonapay_payments"
+	USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
+	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);

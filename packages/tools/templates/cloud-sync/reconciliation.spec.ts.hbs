@@ -1,0 +1,94 @@
+import { reconcile, policyFor, ENTITY_POLICIES, DEFAULT_POLICY } from './reconciliation';
+
+const NOW = '2026-08-28T12:00:00.000Z';
+const LATER = '2026-08-28T12:05:00.000Z';
+
+function input(entity: string, over: Partial<Parameters<typeof reconcile>[0]> = {}) {
+  return {
+    entity,
+    local: { name: 'edited on site' },
+    remote: { name: 'edited in cloud' },
+    localUpdatedAt: NOW,
+    remoteUpdatedAt: NOW,
+    ...over,
+  };
+}
+
+describe('conflict policy', () => {
+  it('defaults to manual, so nothing is discarded by accident', () => {
+    // The dangerous default would be last-write-wins: convenient, and it throws
+    // away a user's work with no trace.
+    expect(DEFAULT_POLICY.policy).toBe('manual');
+    expect(policyFor('some_entity_nobody_configured').policy).toBe('manual');
+    expect(reconcile(input('unconfigured')).action).toBe('escalate');
+  });
+
+  it('remote-wins rejects and hands back the authoritative record', () => {
+    // Rejecting without the remote record would leave the client resending the
+    // same losing change forever.
+    const result = reconcile(input('tenants'));
+    expect(result.action).toBe('reject');
+    if (result.action === 'reject') expect(result.remote).toEqual({ name: 'edited in cloud' });
+  });
+
+  it('local-wins applies the install version', () => {
+    const result = reconcile(input('device_readings'));
+    expect(result.action).toBe('apply');
+    if (result.action === 'apply') expect(result.payload).toEqual({ name: 'edited on site' });
+  });
+});
+
+describe('last-write-wins', () => {
+  beforeEach(() => {
+    ENTITY_POLICIES['lwn_test'] = { policy: 'last-write-wins' };
+  });
+  afterEach(() => {
+    delete ENTITY_POLICIES['lwn_test'];
+  });
+
+  it('newer local wins', () => {
+    const r = reconcile(input('lwn_test', { localUpdatedAt: LATER, remoteUpdatedAt: NOW }));
+    expect(r.action).toBe('apply');
+  });
+
+  it('newer remote wins', () => {
+    const r = reconcile(input('lwn_test', { localUpdatedAt: NOW, remoteUpdatedAt: LATER }));
+    expect(r.action).toBe('reject');
+  });
+
+  it('a tie goes to remote rather than being decided by clock skew', () => {
+    // Two machines' clocks are never exactly equal; when they read equal, the
+    // deterministic answer beats a coin flip.
+    const r = reconcile(input('lwn_test', { localUpdatedAt: NOW, remoteUpdatedAt: NOW }));
+    expect(r.action).toBe('reject');
+  });
+});
+
+describe('merge', () => {
+  afterEach(() => {
+    delete ENTITY_POLICIES['merge_test'];
+  });
+
+  it('applies the supplied merge function', () => {
+    ENTITY_POLICIES['merge_test'] = {
+      policy: 'merge',
+      merge: (local, remote) => ({
+        tags: [...new Set([...(local['tags'] as string[]), ...(remote['tags'] as string[])])],
+      }),
+    };
+    const r = reconcile(
+      input('merge_test', { local: { tags: ['a', 'b'] }, remote: { tags: ['b', 'c'] } }),
+    );
+    expect(r.action).toBe('apply');
+    if (r.action === 'apply') expect(r.payload).toEqual({ tags: ['a', 'b', 'c'] });
+  });
+
+  it('escalates when a merge policy has no merge function', () => {
+    // Silently falling back to discarding one side is exactly what this whole
+    // mechanism exists to prevent.
+    ENTITY_POLICIES['merge_test'] = { policy: 'merge' };
+    const r = reconcile(input('merge_test'));
+    expect(r.action).toBe('escalate');
+    if (r.action === 'escalate') expect(r.reason).toMatch(/no merge function/);
+  });
+});

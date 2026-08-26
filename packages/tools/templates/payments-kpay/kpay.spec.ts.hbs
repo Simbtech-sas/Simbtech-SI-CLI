@@ -1,0 +1,162 @@
+import { createHmac } from 'node:crypto';
+import { toKpayAmount, fromKpayAmount } from './money';
+import { providerFor, KPAY_PROVIDERS } from './providers';
+import { verifyWebhookSignature, verifyGatewayReturn, RETURN_MAX_AGE_MS } from './signatures';
+import { isTerminal } from './kpay.types';
+
+describe('provider catalogue', () => {
+  it('covers every documented operator with a currency and decimals', () => {
+    expect(Object.keys(KPAY_PROVIDERS).length).toBeGreaterThanOrEqual(23);
+    for (const [code, p] of Object.entries(KPAY_PROVIDERS)) {
+      expect(p.code).toBe(code);
+      expect(p.currencies.length).toBeGreaterThan(0);
+      expect([0, 2]).toContain(p.decimals);
+      expect(p.country).toMatch(/^[A-Z]{3}$/);
+    }
+  });
+
+  it('rejects an unknown provider instead of guessing', () => {
+    expect(() => providerFor('MTN_MOMO_NOWHERE')).toThrow(/unknown KPay provider/);
+  });
+});
+
+describe('amount conversion', () => {
+  it('sends XAF as a whole number', () => {
+    // XAF has no minor unit. Sending 1500.00 where 1500 is meant is fine, but
+    // sending cents would be a 100x error.
+    expect(toKpayAmount('1500', 'MTN_MOMO_CMR')).toBe(1500);
+    expect(toKpayAmount('1500.00', 'MTN_MOMO_CMR')).toBe(1500);
+  });
+
+  it('refuses a fraction on an integer currency rather than rounding it away', () => {
+    // Rounding here would silently lose or invent money.
+    expect(() => toKpayAmount('1500.50', 'MTN_MOMO_CMR')).toThrow(/whole units/);
+    expect(() => toKpayAmount('0.99', 'ORANGE_SEN')).toThrow(/whole units/);
+  });
+
+  it('keeps two decimals for providers that support them', () => {
+    expect(toKpayAmount('10.50', 'MPESA_KEN')).toBe(10.5);
+    expect(toKpayAmount('10', 'MPESA_KEN')).toBe(10);
+    expect(toKpayAmount('0.05', 'AIRTEL_GAB')).toBe(0.05);
+  });
+
+  it('refuses more precision than the provider accepts', () => {
+    expect(() => toKpayAmount('10.505', 'MPESA_KEN')).toThrow(/decimal place/);
+  });
+
+  it('round-trips without drift', () => {
+    for (const [amount, provider] of [
+      ['1500', 'MTN_MOMO_CMR'],
+      ['50', 'ORANGE_CMR'],
+      ['10.50', 'MPESA_KEN'],
+      ['0.05', 'AIRTEL_GAB'],
+    ] as const) {
+      const asNumber = toKpayAmount(amount, provider);
+      expect(Number(fromKpayAmount(asNumber, provider))).toBe(Number(amount));
+    }
+  });
+
+  it('rejects anything that is not a decimal string', () => {
+    for (const bad of ['', 'abc', '1e3', '1.2.3', '--5']) {
+      expect(() => toKpayAmount(bad, 'MTN_MOMO_CMR')).toThrow();
+    }
+  });
+});
+
+describe('webhook signature', () => {
+  const secret = 'webhook_secret_value';
+  const body = JSON.stringify({ event: 'payment.completed', paymentId: 'pay_abc' });
+  const valid = createHmac('sha256', secret).update(body).digest('hex');
+
+  it('accepts a correct signature over the raw body', () => {
+    expect(verifyWebhookSignature(body, valid, secret)).toBe(true);
+    expect(verifyWebhookSignature(Buffer.from(body), valid, secret)).toBe(true);
+  });
+
+  it('rejects a wrong signature, a wrong secret, and a missing header', () => {
+    expect(verifyWebhookSignature(body, 'deadbeef', secret)).toBe(false);
+    expect(verifyWebhookSignature(body, valid, 'other_secret')).toBe(false);
+    expect(verifyWebhookSignature(body, undefined, secret)).toBe(false);
+  });
+
+  it('rejects a re-serialised body — which is why the RAW bytes are required', () => {
+    // Same object, different key order. This is the trap: it looks equivalent
+    // and the MAC does not match.
+    const reserialised = JSON.stringify({ paymentId: 'pay_abc', event: 'payment.completed' });
+    expect(verifyWebhookSignature(reserialised, valid, secret)).toBe(false);
+  });
+
+  it('rejects a body altered by one byte', () => {
+    const tampered = body.replace('pay_abc', 'pay_abd');
+    expect(verifyWebhookSignature(tampered, valid, secret)).toBe(false);
+  });
+});
+
+describe('gateway return', () => {
+  const secret = 'gateway_secret_value';
+  const now = 1_800_000_000_000;
+
+  function signed(over: Partial<Record<string, string>> = {}) {
+    const params = {
+      status: 'COMPLETED',
+      reference: 'KPAY-20260514-ABC123',
+      externalId: 'ORDER-12345',
+      ts: String(now),
+      ...over,
+    };
+    const sig = createHmac('sha256', secret)
+      .update(`${params.status}|${params.reference}|${params.externalId}|${params.ts}`)
+      .digest('hex');
+    return { ...params, sig };
+  }
+
+  it('accepts a fresh, correctly signed return', () => {
+    expect(verifyGatewayReturn(signed(), secret, now)).toEqual({ ok: true });
+  });
+
+  it('rejects a tampered status — the obvious attack', () => {
+    // Flipping FAILED to COMPLETED in the URL bar is the whole reason this is signed.
+    const params = signed({ status: 'FAILED' });
+    expect(verifyGatewayReturn({ ...params, status: 'COMPLETED' }, secret, now)).toEqual({
+      ok: false,
+      reason: 'bad-signature',
+    });
+  });
+
+  it('rejects a replayed return older than the window', () => {
+    const old = verifyGatewayReturn(signed(), secret, now + RETURN_MAX_AGE_MS + 1000);
+    expect(old).toEqual({ ok: false, reason: 'expired' });
+  });
+
+  it('rejects a timestamp from the future as firmly as an old one', () => {
+    const ahead = verifyGatewayReturn(signed(), secret, now - RETURN_MAX_AGE_MS - 1000);
+    expect(ahead).toEqual({ ok: false, reason: 'expired' });
+  });
+
+  it('rejects missing or malformed parameters', () => {
+    expect(verifyGatewayReturn({}, secret, now).ok).toBe(false);
+    const params = signed();
+    expect(verifyGatewayReturn({ ...params, ts: 'not-a-number' }, secret, now)).toEqual({
+      ok: false,
+      reason: 'malformed',
+    });
+  });
+
+  it('rejects a signature made with a different secret', () => {
+    expect(verifyGatewayReturn(signed(), 'wrong_secret', now)).toEqual({
+      ok: false,
+      reason: 'bad-signature',
+    });
+  });
+});
+
+describe('terminal statuses', () => {
+  it('treats only completed, failed and cancelled as decisions', () => {
+    // Marking an order paid on PROCESSING is the classic double-fulfilment bug.
+    expect(isTerminal('COMPLETED')).toBe(true);
+    expect(isTerminal('FAILED')).toBe(true);
+    expect(isTerminal('CANCELLED')).toBe(true);
+    expect(isTerminal('PENDING')).toBe(false);
+    expect(isTerminal('PROCESSING')).toBe(false);
+  });
+});

@@ -1,0 +1,48 @@
+id: livekit
+name: LiveKit
+category: realtime
+summary: WebRTC SFU for video and audio calls, self-hosted
+repo: https://github.com/livekit/livekit
+license: Apache-2.0
+flavors: [sisaas, sibile-rn, sibile-capacitor, simice, platform]
+
+deps:
+  server:
+    - livekit-server-sdk
+  web:
+    - "@livekit/components-react"
+    - livekit-client
+
+env:
+  - key: LIVEKIT_URL
+    value: ws://localhost:7880
+    comment: WebSocket URL clients connect to
+  - key: LIVEKIT_API_KEY
+    value: devkey
+  - key: LIVEKIT_API_SECRET
+    value: devsecret_at_least_32_characters_long
+    comment: Must be >= 32 chars. Generate a real one for production.
+
+compose: compose.yml
+
+files:
+  - src: livekit.service.ts.hbs
+    dest: src/modules/livekit/livekit.service.ts
+  - src: livekit.module.ts.hbs
+    dest: src/modules/livekit/livekit.module.ts
+
+register:
+  - anchor: modules
+    snippet: LivekitModule,
+    import: "import { LivekitModule } from './modules/livekit/livekit.module';"
+
+deploy:
+  image: livekit/livekit-server:v1.9.1
+  port: 7880
+  ingress: true
+
+notes:
+  - "Rooms are named `<tenantId>:<room>` so a token can never grant access across tenants."
+  - "Dev server listens on 7880 (ws) and 7881 (TCP fallback); UDP 50000-50100 for media."
+  - "Generate production keys with `livekit-server generate-keys`."
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `livekit` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

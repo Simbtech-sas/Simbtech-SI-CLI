@@ -1,0 +1,212 @@
+import { BadRequestException, Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { and, eq, isNull } from 'drizzle-orm';
+import * as OTPAuth from 'otpauth';
+import { DatabaseService } from '../../../database/database.service';
+import { mfaEnrolments, mfaRecoveryCodes } from '../../../database/schema';
+import { EncryptionService } from '../../security/application/encryption.service';
+import { PasswordService } from '../../iam/infrastructure/password.service';
+import { AuditService } from '../../audit/application/audit.service';
+
+/** Accept the previous and next step: phone clocks drift, users are slow. */
+const SKEW_WINDOW = 1;
+const RECOVERY_CODE_COUNT = 10;
+
+@Injectable()
+export class MfaService {
+  private readonly log = new Logger(MfaService.name);
+
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly encryption: EncryptionService,
+    private readonly passwords: PasswordService,
+    private readonly audit: AuditService,
+  ) {}
+
+  private totp(secret: string, label: string, issuer: string): OTPAuth.TOTP {
+    return new OTPAuth.TOTP({
+      issuer,
+      label,
+      algorithm: 'SHA1',
+      digits: 6,
+      period: 30,
+      secret: OTPAuth.Secret.fromBase32(secret),
+    });
+  }
+
+  /**
+   * Begin enrolment. Returns the URI for the authenticator app.
+   *
+   * The enrolment is NOT active until `confirm` accepts a code. A user who
+   * scans a QR into the wrong app and never checks would otherwise lock
+   * themselves out of their own account.
+   */
+  async begin(userId: string, email: string, issuer: string): Promise<{ uri: string; secret: string }> {
+    const secret = new OTPAuth.Secret({ size: 20 }).base32;
+    const db = this.database.requireAdminDb();
+
+    await db
+      .insert(mfaEnrolments)
+      .values({ userId, secretEncrypted: this.encryption.encrypt(secret) })
+      .onConflictDoUpdate({
+        target: mfaEnrolments.userId,
+        // Re-enrolling replaces an unconfirmed secret. A confirmed one is
+        // refused below, so this cannot silently swap a working second factor.
+        set: { secretEncrypted: this.encryption.encrypt(secret), confirmedAt: null },
+      });
+
+    return { uri: this.totp(secret, email, issuer).toString(), secret };
+  }
+
+  /** Finish enrolment by proving the authenticator works. */
+  async confirm(userId: string, code: string, email: string, issuer: string): Promise<string[]> {
+    const enrolment = await this.enrolmentFor(userId);
+    if (!enrolment) throw new BadRequestException('start enrolment first');
+    if (enrolment.confirmedAt) throw new BadRequestException('already enrolled');
+
+    const secret = this.encryption.decrypt(enrolment.secretEncrypted);
+    const delta = this.totp(secret, email, issuer).validate({ token: code, window: SKEW_WINDOW });
+    if (delta === null) throw new UnauthorizedException('that code is not valid');
+
+    const codes = Array.from({ length: RECOVERY_CODE_COUNT }, () =>
+      randomBytes(5).toString('hex').toUpperCase().match(/.{1,5}/g)!.join('-'),
+    );
+
+    await this.database.requireAdminDb().transaction(async (tx) => {
+      await tx
+        .update(mfaEnrolments)
+        .set({ confirmedAt: new Date(), lastStep: String(delta) })
+        .where(eq(mfaEnrolments.userId, userId));
+      await tx.insert(mfaRecoveryCodes).values(
+        await Promise.all(
+          codes.map(async (code) => ({ userId, codeHash: await this.passwords.hash(code) })),
+        ),
+      );
+    });
+
+    await this.audit.recordPlatformEvent({
+      actorUserId: userId,
+      action: 'mfa.enrolled',
+      targetType: 'user',
+      targetId: userId,
+    });
+
+    // Returned ONCE. They are hashed, so nothing can show them again.
+    return codes;
+  }
+
+  async isRequired(userId: string): Promise<boolean> {
+    return (await this.enrolmentFor(userId))?.confirmedAt != null;
+  }
+
+  /**
+   * Verify a code at login.
+   *
+   * Rejects a code already used in its own window. A six-digit code lives for
+   * 30 seconds, and without this check anyone who reads it over a shoulder has
+   * those 30 seconds to use it too.
+   */
+  async verify(userId: string, code: string, email: string, issuer: string): Promise<boolean> {
+    const enrolment = await this.enrolmentFor(userId);
+    if (!enrolment?.confirmedAt) return false;
+
+    const secret = this.encryption.decrypt(enrolment.secretEncrypted);
+    const delta = this.totp(secret, email, issuer).validate({ token: code, window: SKEW_WINDOW });
+
+    if (delta !== null) {
+      if (enrolment.lastStep === String(delta)) {
+        this.log.warn(`replayed TOTP code for user ${userId}`);
+        return false;
+      }
+      await this.database
+        .requireAdminDb()
+        .update(mfaEnrolments)
+        .set({ lastStep: String(delta) })
+        .where(eq(mfaEnrolments.userId, userId));
+      return true;
+    }
+
+    return this.consumeRecoveryCode(userId, code);
+  }
+
+  /**
+   * Spend a recovery code. Single use, and the spend is audited.
+   *
+   * Every unused code is compared even after a match, so the time taken does
+   * not reveal which one matched or how many remain.
+   */
+  private async consumeRecoveryCode(userId: string, candidate: string): Promise<boolean> {
+    const db = this.database.requireAdminDb();
+    const rows = await db
+      .select()
+      .from(mfaRecoveryCodes)
+      .where(and(eq(mfaRecoveryCodes.userId, userId), isNull(mfaRecoveryCodes.usedAt)));
+
+    let matched: string | null = null;
+    for (const row of rows) {
+      if (await this.passwords.verify(row.codeHash, candidate.trim().toUpperCase())) {
+        matched ??= row.id;
+      }
+    }
+    if (!matched) return false;
+
+    await db
+      .update(mfaRecoveryCodes)
+      .set({ usedAt: new Date() })
+      .where(eq(mfaRecoveryCodes.id, matched));
+    await this.audit.recordPlatformEvent({
+      actorUserId: userId,
+      action: 'mfa.recovery_code_used',
+      targetType: 'user',
+      targetId: userId,
+      metadata: { remaining: rows.length - 1 },
+    });
+    this.log.warn(`recovery code used for ${userId}; ${rows.length - 1} left`);
+    return true;
+  }
+
+  /**
+   * Turn MFA off. Requires the current password.
+   *
+   * Without that, a stolen session removes the second factor — which is exactly
+   * what the second factor exists to survive.
+   */
+  async disable(userId: string, passwordHash: string, password: string): Promise<void> {
+    if (!(await this.passwords.verify(passwordHash, password))) {
+      throw new UnauthorizedException('password required to disable MFA');
+    }
+    await this.database.requireAdminDb().transaction(async (tx) => {
+      await tx.delete(mfaRecoveryCodes).where(eq(mfaRecoveryCodes.userId, userId));
+      await tx.delete(mfaEnrolments).where(eq(mfaEnrolments.userId, userId));
+    });
+    await this.audit.recordPlatformEvent({
+      actorUserId: userId,
+      action: 'mfa.disabled',
+      targetType: 'user',
+      targetId: userId,
+    });
+  }
+
+  private async enrolmentFor(userId: string) {
+    const [row] = await this.database
+      .requireAdminDb()
+      .select()
+      .from(mfaEnrolments)
+      .where(eq(mfaEnrolments.userId, userId))
+      .limit(1);
+    return row;
+  }
+}
+
+/** Constant-time compare with the length guard `timingSafeEqual` needs. */
+export function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a, 'utf8');
+  const right = Buffer.from(b, 'utf8');
+  if (left.length !== right.length) return false;
+  return timingSafeEqual(left, right);
+}
+
+/** SHA-256 of a refresh token, for the device list. Never the token itself. */
+export function sessionHash(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}

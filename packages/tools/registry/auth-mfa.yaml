@@ -1,0 +1,49 @@
+id: auth-mfa
+kind: feature
+name: MFA, password policy and device management
+category: auth
+summary: TOTP second factor with recovery codes, a password policy that resists guessing, and revocable sessions
+repo: https://github.com/SIMBTECH-SAS/boilerplates
+license: UNLICENSED
+flavors: [sisaas]
+
+deps:
+  server:
+    - otpauth
+
+migrations:
+  - src: migration.sql.hbs
+    name: mfa_and_devices
+
+files:
+  - src: schema.ts.hbs
+    dest: src/database/schema/mfa.ts
+  - src: password-policy.ts.hbs
+    dest: src/modules/mfa/domain/password-policy.ts
+  - src: password-policy.spec.ts.hbs
+    dest: src/modules/mfa/domain/password-policy.spec.ts
+  - src: mfa.service.ts.hbs
+    dest: src/modules/mfa/application/mfa.service.ts
+  - src: devices.service.ts.hbs
+    dest: src/modules/mfa/application/devices.service.ts
+  - src: mfa.controller.ts.hbs
+    dest: src/modules/mfa/interface/mfa.controller.ts
+  - src: mfa.module.ts.hbs
+    dest: src/modules/mfa/mfa.module.ts
+
+register:
+  - anchor: schema
+    snippet: "export * from './mfa';"
+  - anchor: modules
+    snippet: MfaModule,
+    import: "import { MfaModule } from './modules/mfa/mfa.module';"
+
+satisfies: ['4.4', '4.5', '4.7']
+
+notes:
+  - "The TOTP secret is stored ENCRYPTED. A secret is a bearer credential — anyone holding it mints valid codes forever, so a database dump must not be a set of working second factors."
+  - "A code cannot be replayed inside its own 30-second window: the last accepted step is recorded. Without that, whoever reads a code over a shoulder has 30 seconds to use it too."
+  - "Recovery codes are hashed like passwords and returned exactly once. Every candidate is compared even after a match, so timing does not reveal how many remain."
+  - "Disabling MFA requires the password. Otherwise a stolen session removes the second factor — the exact thing it exists to survive."
+  - "The password policy drops composition rules on purpose. `one uppercase, one digit, one symbol` is why `Password1!` exists; NIST 800-63B dropped them. Length, a common-password list, and rejecting anything built from the account are what actually resist guessing."
+  - "MFA being AVAILABLE is code; MFA being MANDATORY for administrators is a policy somebody signs. This ships the first."

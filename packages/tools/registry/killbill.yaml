@@ -1,0 +1,18 @@
+id: killbill
+name: Kill Bill
+category: finance
+summary: Mature subscription billing and payment platform — plans, entitlements, dunning, invoicing
+repo: https://github.com/killbill/killbill
+license: Apache-2.0
+flavors: [sisaas, platform]
+
+env:
+  - key: KILLBILL_URL
+    value: http://localhost:8080
+  - key: KILLBILL_API_KEY
+  - key: KILLBILL_API_SECRET
+
+notes:
+  - "The most complete open-source billing platform: proration, entitlements, dunning and invoicing are all first-class rather than things you build."
+  - "It is a Java/Tomcat application with its own MySQL and a plugin architecture — real operational weight. Worth it when billing IS the product."
+  - "Payment plugins target cards and bank rails. Mobile Money via KPay would need a custom plugin, or you drive the charge and record it."

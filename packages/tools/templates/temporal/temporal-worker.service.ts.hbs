@@ -1,0 +1,89 @@
+import { Injectable, Logger, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
+import path from 'node:path';
+import { NativeConnection, Worker } from '@temporalio/worker';
+import { AppConfigService } from '../../../config/app-config.service';
+import { DatabaseService } from '../../../database/database.service';
+import { OutboxService } from '../../events/application/outbox.service';
+import { createActivities } from './activities';
+import { ActivityRegistry } from './activity-registry.service';
+
+/**
+ * The Temporal worker, running inside the existing background worker process.
+ *
+ * Deliberately not a fourth deployable. It polls a task queue and holds no HTTP
+ * port, which is exactly what the BullMQ worker already does — one process, one
+ * deployment, one place where background work happens. Split it out when a
+ * workflow's CPU profile is different enough to need its own scaling, not
+ * before.
+ *
+ * It starts only where `consume` is true (the worker, not the API). An API
+ * replica polling the task queue would execute workflow steps during a rolling
+ * deploy and drop them halfway.
+ */
+@Injectable()
+export class TemporalWorker implements OnApplicationBootstrap, OnModuleDestroy {
+  private readonly log = new Logger(TemporalWorker.name);
+  private worker?: Worker;
+  private connection?: NativeConnection;
+
+  constructor(
+    private readonly config: AppConfigService,
+    private readonly database: DatabaseService,
+    private readonly outbox: OutboxService,
+    private readonly activities: ActivityRegistry,
+  ) {}
+
+  async onApplicationBootstrap(): Promise<void> {
+    const settings = this.config.temporal;
+    if (!settings) {
+      // Unconfigured is a valid state in development. Say so once and carry on;
+      // failing to boot the whole worker over an optional dependency is worse.
+      this.log.warn('TEMPORAL_ADDRESS is not set — no workflows will run here');
+      return;
+    }
+
+    // An unreachable Temporal must not take the worker down with it. On day one
+    // the compose stack is not up yet, and TEMPORAL_ADDRESS has a default — so
+    // without this catch, adding Temporal stops email and billing from running
+    // at all. Logged at ERROR because no workflow will execute; the rest of the
+    // worker is unaffected.
+    try {
+      this.connection = await NativeConnection.connect({ address: settings.address });
+    } catch (err) {
+      this.log.error(
+        `cannot reach Temporal at ${settings.address} (${(err as Error).message}) — ` +
+          'no workflow will run. The rest of the worker is unaffected.',
+      );
+      return;
+    }
+
+    this.worker = await Worker.create({
+      connection: this.connection,
+      namespace: settings.namespace,
+      taskQueue: settings.taskQueue,
+      // A PATH, not an import: workflow code is bundled and run in an isolated
+      // deterministic sandbox. Importing it here would drag Nest — and every
+      // database connection it holds — into that sandbox.
+      workflowsPath: path.join(__dirname, '../workflows/index'),
+      // Own activities plus whatever any feature registered. `all()` runs after
+      // every onModuleInit, so the set is complete before the worker polls.
+      activities: {
+        ...createActivities({ database: this.database, outbox: this.outbox, log: this.log }),
+        ...this.activities.all(),
+      },
+    });
+
+    this.log.log(`Temporal worker polling ${settings.taskQueue}`);
+    // Not awaited: `run()` resolves only on shutdown, and awaiting it here would
+    // block Nest's bootstrap forever.
+    void this.worker.run().catch((err: unknown) => {
+      this.log.error(`Temporal worker stopped: ${(err as Error).message}`);
+    });
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    // Drains in-flight tasks rather than dropping them onto another poller.
+    this.worker?.shutdown();
+    await this.connection?.close();
+  }
+}

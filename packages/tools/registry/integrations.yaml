@@ -1,0 +1,64 @@
+id: integrations
+kind: feature
+name: Tool webhook bridge
+category: queue
+summary: One signed endpoint that turns any imported tool's webhook into a Kafka event
+repo: https://github.com/SIMBTECH-SAS/boilerplates
+license: UNLICENSED
+flavors: [sisaas]
+
+migrations:
+  - src: migration.sql.hbs
+    name: webhook_deliveries
+
+files:
+  - src: schema.ts.hbs
+    dest: src/database/schema/webhooks.ts
+  - src: integration-events.ts.hbs
+    dest: root:packages/events/src/integrations.ts
+  - src: webhook-sources.ts.hbs
+    dest: src/modules/integrations/domain/webhook-sources.ts
+  - src: webhook-sources.spec.ts.hbs
+    dest: src/modules/integrations/domain/webhook-sources.spec.ts
+  - src: webhook-inbox.service.ts.hbs
+    dest: src/modules/integrations/application/webhook-inbox.service.ts
+  - src: webhook.controller.ts.hbs
+    dest: src/modules/integrations/interface/webhook.controller.ts
+  - src: integration-listener.ts.hbs
+    dest: src/modules/integrations/application/integration-listener.ts
+  - src: integration-audit.handler.ts.hbs
+    dest: src/modules/integrations/application/integration-audit.handler.ts
+  - src: tool-endpoints.ts.hbs
+    dest: src/modules/integrations/application/tool-endpoints.ts
+  - src: tool-endpoints.spec.ts.hbs
+    dest: src/modules/integrations/application/tool-endpoints.spec.ts
+  - src: integrations.module.ts.hbs
+    dest: src/modules/integrations/integrations.module.ts
+
+register:
+  - anchor: events
+    snippet: "...INTEGRATION_EVENTS,"
+    import: "import { INTEGRATION_EVENTS } from './integrations.ts';\nexport * from './integrations.ts';"
+  - anchor: schema
+    snippet: "export * from './webhooks';"
+  - anchor: modules
+    snippet: IntegrationsModule,
+    import: "import { IntegrationsModule } from './modules/integrations/integrations.module';"
+  # The WORKER too: the controller receives, but the handlers that REACT to a
+  # tool event run where events are consumed.
+  - anchor: workerModules
+    snippet: IntegrationsModule,
+    import: "import { IntegrationsModule } from './modules/integrations/integrations.module';"
+
+notes:
+  - "Two directions, not symmetric. INBOUND is events — a tool announcing something has many possible readers and no idea who they are. OUTBOUND is a direct call through `ToolEndpoints` — asking one tool one question over a broker is request-response built on fan-out."
+  - "`onIntegrationEvent(registry, 'medusa', 'order.placed', schema, handler)` is how you react to a tool. The schema is YOURS: when the vendor changes a field it fails with a validation error naming it, instead of silently taking another branch."
+  - "`IntegrationAuditHandler` listens to everything and records it. It exists so the bridge is not publishing into a void — without one listener, an accepted-and-published webhook looks identical to one that never arrived."
+  - "Not every tool speaks REST. Temporal is gRPC, Zitadel and Keycloak are OIDC, MinIO is S3 through the template's storage module, LiveKit needs a per-room signed JWT. `ToolEndpoints` refuses those by name and says what to use instead, rather than failing on a URL that was never going to exist."
+  - "`ToolEndpoints` resolves a tool's ADDRESS and CREDENTIAL, not its API. Wrapping 29 vendor SDKs behind one interface would be worse than `fetch` at all of them."
+  - "Auth headers are only set where the scheme is a single known header. LiveKit signs a per-room JWT and Keycloak needs a token exchange — a guessed header is a 401 that reads like a wrong key, so those return no headers rather than wrong ones."
+  - "One door for every imported tool: `POST /webhooks/:source`. Enable a source in `webhook-sources.ts` and put its secret in the environment — an unlisted source gets a 404, an unconfigured one gets a 503."
+  - "The delivery is verified against the RAW body, recorded, and published as `IntegrationEventReceived` in ONE transaction. A redelivery inserts nothing and so publishes nothing."
+  - "`data` is deliberately UNTYPED. Medusa and Documenso own their payloads and change them on their own schedule; a hand-written schema for someone else's JSON is compile-time safety that does not exist. Narrow it in your handler with a schema you own."
+  - "`bearer-token` proves the caller knows the secret, not that this body came from them — it cannot detect tampering. Only for tools that offer nothing better (LiveKit)."
+  - "The deliveries table is NOT tenant-scoped: a third-party tool knows nothing about our tenants. Whatever the event turns into downstream is."

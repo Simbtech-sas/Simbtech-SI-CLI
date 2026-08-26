@@ -1,0 +1,26 @@
+id: grafana-stack
+name: Grafana + Prometheus + Loki
+category: observability
+summary: Metrics, logs and dashboards — the standard self-hosted observability trio
+repo: https://github.com/grafana/grafana
+license: AGPL-3.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "prom-client"
+    - "nestjs-pino"
+    - "pino-http"
+
+env:
+  - key: PROMETHEUS_METRICS_PATH
+    value: /metrics
+  - key: LOKI_URL
+    value: "http://localhost:3100"
+
+compose: compose.yml
+
+notes:
+  - Loki listens on 3100, which is also the SiSAAS web dev port in the docs. Change one of them.
+  - Never label metrics by tenant id — unbounded cardinality will take Prometheus down.
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `grafana-stack` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

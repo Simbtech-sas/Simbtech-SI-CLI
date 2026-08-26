@@ -1,0 +1,51 @@
+import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { TenantProvisioned } from '@{{brand}}/events';
+import { EventRegistry } from '../../events/application/event-registry.service';
+import { TemporalClient } from './temporal.client';
+import { EMAIL_VERIFIED_SIGNAL, TENANT_ONBOARDING } from '../domain/workflow-signals';
+
+/**
+ * The Kafka → Temporal seam.
+ *
+ * An event does not DO the work; it starts or advances the process that does.
+ * That split is the whole point of having both: the event says "a tenant
+ * exists", and the workflow owns the seven days of waiting that follow.
+ *
+ * The workflow id is derived from the tenant, never generated, so an
+ * at-least-once event redelivered an hour later finds the run already going
+ * instead of starting a second one.
+ */
+@Injectable()
+export class TemporalEventHandlers implements OnModuleInit {
+  private readonly log = new Logger(TemporalEventHandlers.name);
+
+  constructor(
+    private readonly registry: EventRegistry,
+    private readonly temporal: TemporalClient,
+  ) {}
+
+  onModuleInit(): void {
+    this.registry.on(TenantProvisioned, 'start-onboarding', async ({ payload }) => {
+      const workflowId = TemporalClient.workflowId(payload.tenantId, 'onboarding', payload.tenantId);
+      const { started } = await this.temporal.startIdempotent(TENANT_ONBOARDING, {
+        workflowId,
+        args: [{ tenantId: payload.tenantId, tenantName: payload.name }],
+      });
+      if (started) this.log.log(`onboarding started for ${payload.slug}`);
+    });
+  }
+
+  /**
+   * Advance a running workflow from outside it.
+   *
+   * Called by whatever confirms an email address. A signal for a workflow that
+   * has already finished is ordinary — the customer clicked a minute after the
+   * timer expired — so this returns false rather than throwing.
+   */
+  async confirmEmailVerified(tenantId: string): Promise<boolean> {
+    return this.temporal.signal(
+      TemporalClient.workflowId(tenantId, 'onboarding', tenantId),
+      EMAIL_VERIFIED_SIGNAL,
+    );
+  }
+}

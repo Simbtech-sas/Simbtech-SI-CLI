@@ -1,0 +1,97 @@
+import type { PaymentState } from '../../payments/domain/payment-provider.port';
+
+/**
+ * Every JoonaPay response is wrapped in the same envelope. `success: false` can
+ * arrive with a 2xx, so the envelope — not the HTTP status alone — decides.
+ */
+export interface JoonapayEnvelope<T> {
+  success: boolean;
+  message: string;
+  data: T | null;
+  errors: { code?: string; details?: Record<string, unknown> } | null;
+  metadata?: { request_id?: string; timestamp?: string; version?: string };
+}
+
+/** Statuses from the REST API. Lowercase. */
+export type JoonapayPaymentStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired';
+
+/** Statuses from the payout group API. Uppercase — a different vocabulary. */
+export type JoonapayPayoutGroupStatus =
+  | 'NEW'
+  | 'AWAITING_VALIDATION'
+  | 'AWAITING_PAYMENT'
+  | 'SCHEDULED'
+  | 'PENDING'
+  | 'SUCCESS'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export type JoonapayWebhookEventName =
+  | 'payment.completed'
+  | 'payment.failed'
+  | 'payout_group.completed'
+  | 'payout_group.failed';
+
+export interface JoonapayPaymentWebhook {
+  event: 'payment.completed' | 'payment.failed';
+  timestamp: string;
+  data: {
+    payment_request_uuid: string;
+    reference: string;
+    merchant_transaction_id?: string | null;
+    amount: number;
+    currency: string;
+    /** UPPERCASE here — `SUCCESS`, not `completed`. */
+    status: string;
+    paid_at?: string | null;
+    paid_amount?: number | null;
+  };
+}
+
+/**
+ * Normalise a JoonaPay status to the port's vocabulary.
+ *
+ * Two vocabularies reach this function and they do not agree: the REST API says
+ * `completed`, the webhook for the very same payment says `SUCCESS`. Treating
+ * them as one enum is how a settled payment gets recorded as unknown.
+ *
+ * `expired` maps to `cancelled`, not `failed`: no money moved and nothing went
+ * wrong — the customer simply never paid. Calling that a failure sends dunning
+ * mail to people who were never charged.
+ */
+export function toPaymentState(status: string): PaymentState {
+  switch (status.toLowerCase()) {
+    case 'pending':
+    case 'new':
+    case 'awaiting_validation':
+    case 'awaiting_payment':
+    case 'scheduled':
+      return 'pending';
+    case 'processing':
+      return 'processing';
+    case 'completed':
+    case 'success':
+      return 'settled';
+    case 'failed':
+      return 'failed';
+    case 'cancelled':
+    case 'canceled':
+    case 'expired':
+      return 'cancelled';
+    default:
+      // An unknown status is NOT settled. Defaulting the other way would let a
+      // renamed status mark orders paid.
+      return 'pending';
+  }
+}
+
+/** Only these three are decisions. `processing` is not. */
+export function isTerminal(state: PaymentState): boolean {
+  return state === 'settled' || state === 'failed' || state === 'cancelled';
+}

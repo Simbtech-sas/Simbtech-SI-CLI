@@ -1,0 +1,234 @@
+/**
+ * Email bodies, as typed templates.
+ *
+ * Plain functions rather than a rendering library: these are half a dozen short
+ * messages, and a dependency that renders JSX to HTML tables is a lot of
+ * machinery for that. Swap in react-email when the marketing team arrives.
+ */
+import { formatMoney } from './documents';
+
+/**
+ * Shared by every billing message. `payUrl` and `ussdHint` are both optional and
+ * both meaningful: a card provider gives a link, a Mobile Money provider pushes
+ * a prompt to the phone and there is nothing to click. A template that assumed a
+ * link would tell half the customers to press a button that is not there.
+ */
+export interface BillingContext {
+  name: string | null;
+  tenantName: string;
+  planName: string;
+  amount: string;
+  currency: string;
+  payUrl?: string;
+  ussdHint?: string;
+}
+
+export interface TemplateMap {
+  'password-reset': { name: string | null; resetUrl: string; expiresInMinutes: number };
+  'email-verification': { name: string | null; verifyUrl: string };
+  invitation: { inviterName: string; tenantName: string; acceptUrl: string };
+  welcome: { name: string | null; appUrl: string };
+  'trial-ending': BillingContext & { daysLeft: number };
+  /** The payment reminder. Sent at each `request-again` step of the dunning schedule. */
+  'payment-requested': BillingContext & { dueDate: string; attempt: number; daysUntilSuspension: number };
+  'payment-failed': BillingContext & { reason?: string; daysUntilSuspension: number };
+  'subscription-suspended': BillingContext & { supportEmail: string };
+  invoice: BillingContext & { number: string; dueDate: string };
+  receipt: {
+    name: string | null;
+    tenantName: string;
+    number: string;
+    amount: string;
+    currency: string;
+    paidAt: string;
+    reference: string;
+  };
+}
+
+export type EmailTemplate = keyof TemplateMap;
+export type TemplateData<T extends EmailTemplate> = TemplateMap[T];
+
+export interface RenderedEmail {
+  subject: string;
+  text: string;
+  html: string;
+}
+
+/** Escape everything interpolated into HTML. A display name is user input. */
+function esc(value: string | null): string {
+  return (value ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
+  );
+}
+
+function layout(heading: string, body: string, cta?: { label: string; url: string }): string {
+  return `<!doctype html><html><body style="font-family:system-ui,sans-serif;line-height:1.5;color:#171717">
+  <div style="max-width:32rem;margin:0 auto;padding:2rem">
+    <h1 style="font-size:1.25rem">${heading}</h1>
+    ${body}
+    ${cta ? `<p><a href="${cta.url}" style="display:inline-block;background:#2563eb;color:#fff;padding:.75rem 1.25rem;border-radius:.5rem;text-decoration:none">${cta.label}</a></p>
+    <p style="color:#737373;font-size:.875rem">If the button does not work, paste this into your browser:<br>${cta.url}</p>` : ''}
+  </div></body></html>`;
+}
+
+export function renderTemplate<T extends EmailTemplate>(
+  template: T,
+  data: TemplateData<T>,
+): RenderedEmail {
+  switch (template) {
+    case 'password-reset': {
+      const d = data as TemplateMap['password-reset'];
+      return {
+        subject: 'Reset your password',
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nOpen this link to set a new password. It expires in ${d.expiresInMinutes} minutes and works once.\n\n${d.resetUrl}\n\nIf you did not ask for this, ignore this email — nothing has changed.`,
+        html: layout(
+          'Reset your password',
+          `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
+           <p>This link expires in ${d.expiresInMinutes} minutes and works once.</p>
+           <p style="color:#737373">If you did not ask for this, ignore this email — nothing has changed.</p>`,
+          { label: 'Set a new password', url: d.resetUrl },
+        ),
+      };
+    }
+    case 'email-verification': {
+      const d = data as TemplateMap['email-verification'];
+      return {
+        subject: 'Confirm your email address',
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nConfirm your address:\n${d.verifyUrl}`,
+        html: layout('Confirm your email', `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>`, {
+          label: 'Confirm email',
+          url: d.verifyUrl,
+        }),
+      };
+    }
+    case 'invitation': {
+      const d = data as TemplateMap['invitation'];
+      return {
+        subject: `${d.inviterName} invited you to ${d.tenantName}`,
+        text: `${d.inviterName} invited you to join ${d.tenantName}.\n\n${d.acceptUrl}`,
+        html: layout(
+          `Join ${esc(d.tenantName)}`,
+          `<p>${esc(d.inviterName)} invited you to join <strong>${esc(d.tenantName)}</strong>.</p>`,
+          { label: 'Accept invitation', url: d.acceptUrl },
+        ),
+      };
+    }
+    case 'welcome': {
+      const d = data as TemplateMap['welcome'];
+      return {
+        subject: 'Welcome to {{brand}}',
+        text: `Welcome${d.name ? ` ${d.name}` : ''}.\n\n${d.appUrl}`,
+        html: layout(`Welcome${d.name ? ` ${esc(d.name)}` : ''}`, '<p>Your account is ready.</p>', {
+          label: 'Open {{brand}}',
+          url: d.appUrl,
+        }),
+      };
+    }
+    case 'trial-ending': {
+      const d = data as TemplateMap['trial-ending'];
+      const price = formatMoney(d.amount, d.currency);
+      return {
+        subject: d.daysLeft === 1 ? 'Your trial ends tomorrow' : `Your trial ends in ${d.daysLeft} days`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nYour ${d.planName} trial for ${d.tenantName} ends in ${d.daysLeft} day(s). After that it renews at ${price}.\n\nNothing is charged automatically — you will get a payment request when the trial ends.${d.payUrl ? `\n\n${d.payUrl}` : ''}`,
+        html: layout(
+          `Your trial ends in ${d.daysLeft} day${d.daysLeft === 1 ? '' : 's'}`,
+          `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
+           <p>Your <strong>${esc(d.planName)}</strong> trial for ${esc(d.tenantName)} ends in ${d.daysLeft} day${d.daysLeft === 1 ? '' : 's'}. After that it renews at <strong>${price}</strong>.</p>
+           <p style="color:#737373">Nothing is charged automatically — you will get a payment request when the trial ends.</p>`,
+          d.payUrl ? { label: 'Review your plan', url: d.payUrl } : undefined,
+        ),
+      };
+    }
+    case 'payment-requested': {
+      const d = data as TemplateMap['payment-requested'];
+      const price = formatMoney(d.amount, d.currency);
+      // Attempt 1 is a notice; anything after is a reminder, and saying so
+      // avoids sounding like the first one never arrived.
+      const reminder = d.attempt > 1;
+      return {
+        subject: reminder
+          ? `Reminder: ${price} due for ${d.tenantName}`
+          : `${price} due for ${d.tenantName}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\n${reminder ? 'This is a reminder that your' : 'Your'} ${d.planName} subscription for ${d.tenantName} is due: ${price}, by ${d.dueDate}.\n\n${d.ussdHint ?? ''}${d.payUrl ? `\n${d.payUrl}` : ''}\n\nAccess continues for ${d.daysUntilSuspension} more day(s) while this is outstanding.`,
+        html: layout(
+          reminder ? 'Payment reminder' : 'Payment due',
+          `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
+           <p>${reminder ? 'This is a reminder that your' : 'Your'} <strong>${esc(d.planName)}</strong> subscription for ${esc(d.tenantName)} is due: <strong>${price}</strong>, by ${esc(d.dueDate)}.</p>
+           ${d.ussdHint ? `<p>${esc(d.ussdHint)}</p>` : ''}
+           <p style="color:#737373">Access continues for ${d.daysUntilSuspension} more day${d.daysUntilSuspension === 1 ? '' : 's'} while this is outstanding.</p>`,
+          d.payUrl ? { label: 'Pay now', url: d.payUrl } : undefined,
+        ),
+      };
+    }
+    case 'payment-failed': {
+      const d = data as TemplateMap['payment-failed'];
+      const price = formatMoney(d.amount, d.currency);
+      return {
+        subject: `Payment of ${price} did not go through`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nThe ${price} payment for ${d.tenantName} did not complete.${d.reason ? `\n\nReason: ${d.reason}` : ''}\n\nWe will ask again. Access continues for ${d.daysUntilSuspension} more day(s).${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}`,
+        html: layout(
+          'Payment did not go through',
+          `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
+           <p>The <strong>${price}</strong> payment for ${esc(d.tenantName)} did not complete.</p>
+           ${d.reason ? `<p style="color:#737373">Reason: ${esc(d.reason)}</p>` : ''}
+           <p>We will ask again. Access continues for ${d.daysUntilSuspension} more day${d.daysUntilSuspension === 1 ? '' : 's'}.</p>
+           ${d.ussdHint ? `<p>${esc(d.ussdHint)}</p>` : ''}`,
+          d.payUrl ? { label: 'Try again', url: d.payUrl } : undefined,
+        ),
+      };
+    }
+    case 'subscription-suspended': {
+      const d = data as TemplateMap['subscription-suspended'];
+      const price = formatMoney(d.amount, d.currency);
+      return {
+        subject: `${d.tenantName} has been suspended`,
+        // Says plainly that the data is still there. That sentence is the whole
+        // difference between a billing problem and a panicked support ticket.
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nAccess to ${d.tenantName} is suspended because ${price} is outstanding.\n\nYour data has NOT been deleted. Paying restores access immediately.${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}\n\nQuestions: ${d.supportEmail}`,
+        html: layout(
+          `${esc(d.tenantName)} is suspended`,
+          `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
+           <p>Access is suspended because <strong>${price}</strong> is outstanding.</p>
+           <p><strong>Your data has not been deleted.</strong> Paying restores access immediately.</p>
+           ${d.ussdHint ? `<p>${esc(d.ussdHint)}</p>` : ''}
+           <p style="color:#737373">Questions: ${esc(d.supportEmail)}</p>`,
+          d.payUrl ? { label: 'Restore access', url: d.payUrl } : undefined,
+        ),
+      };
+    }
+    case 'invoice': {
+      const d = data as TemplateMap['invoice'];
+      const price = formatMoney(d.amount, d.currency);
+      return {
+        subject: `Invoice ${d.number} — ${price}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nInvoice ${d.number} for ${d.tenantName}: ${price}, due ${d.dueDate}. It is attached.${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}`,
+        html: layout(
+          `Invoice ${esc(d.number)}`,
+          `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
+           <p><strong>${price}</strong> for ${esc(d.tenantName)}, due ${esc(d.dueDate)}. The invoice is attached.</p>
+           ${d.ussdHint ? `<p>${esc(d.ussdHint)}</p>` : ''}`,
+          d.payUrl ? { label: 'Pay invoice', url: d.payUrl } : undefined,
+        ),
+      };
+    }
+    case 'receipt': {
+      const d = data as TemplateMap['receipt'];
+      const price = formatMoney(d.amount, d.currency);
+      return {
+        subject: `Receipt ${d.number} — ${price}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nWe received ${price} for ${d.tenantName} on ${d.paidAt}.\n\nReference: ${d.reference}\nReceipt ${d.number} is attached.`,
+        html: layout(
+          'Payment received',
+          `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
+           <p>We received <strong>${price}</strong> for ${esc(d.tenantName)} on ${esc(d.paidAt)}.</p>
+           <p style="color:#737373">Reference: ${esc(d.reference)}<br>Receipt ${esc(d.number)} is attached.</p>`,
+        ),
+      };
+    }
+    default: {
+      // Exhaustive: adding a template to the map without a case is a compile error.
+      const never: never = template;
+      throw new Error(`no renderer for template ${String(never)}`);
+    }
+  }
+}

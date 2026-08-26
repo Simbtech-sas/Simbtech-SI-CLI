@@ -1,0 +1,233 @@
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { AppConfigService } from '../../../config/app-config.service';
+import { PaymentRegistry } from '../../payments/application/payment-registry';
+import type {
+  ChargeRequest,
+  ChargeResult,
+  PaymentProvider,
+  PaymentSnapshot,
+  ProviderCapabilities,
+  ProviderEvent,
+} from '../../payments/domain/payment-provider.port';
+import { JoonapayClient, JoonapayError } from '../domain/joonapay.client';
+import { verifyWebhookSignature } from '../domain/signatures';
+import { toPaymentState, type JoonapayPaymentWebhook } from '../domain/joonapay.types';
+
+/**
+ * Currencies with no minor unit. 5000 XOF is five thousand francs, not fifty.
+ * Sending a fraction where none exists is a silent 100x error in either
+ * direction, so it is refused rather than rounded.
+ */
+const ZERO_DECIMAL = new Set(['XOF', 'XAF', 'GNF', 'KMF', 'DJF', 'RWF', 'UGX', 'VUV', 'CLP', 'JPY', 'KRW']);
+
+export function toJoonapayAmount(amount: string, currency: string): number {
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`invalid amount "${amount}"`);
+  }
+  if (ZERO_DECIMAL.has(currency.toUpperCase()) && !Number.isInteger(value)) {
+    throw new Error(
+      `${currency} has no minor unit — ${amount} cannot be settled. ` +
+        'Round it deliberately upstream rather than letting the gateway decide.',
+    );
+  }
+  return value;
+}
+
+/** JoonaPay rejects a non-HTTPS callback, and a redirected POST arrives as a GET. */
+export function requireHttps(url: string | undefined, field: string): string | undefined {
+  if (!url) return undefined;
+  if (!url.startsWith('https://')) {
+    throw new Error(`${field} must be https:// — JoonaPay rejects http:// at creation`);
+  }
+  return url;
+}
+
+/**
+ * The checkout URL's field name is not pinned by the published documentation,
+ * which says only "redirect the customer to the checkout URL". Rather than
+ * hardcode a guess that fails as a null redirect in production, read the
+ * plausible names and — if none is present — fail loudly with what did arrive.
+ */
+export function readCheckoutUrl(data: Record<string, unknown>): string {
+  for (const key of ['checkout_url', 'payment_url', 'url', 'link', 'payment_link', 'redirect_url']) {
+    const value = data[key];
+    if (typeof value === 'string' && value.startsWith('http')) return value;
+  }
+  throw new Error(
+    `JoonaPay returned no checkout URL. Fields present: ${Object.keys(data).join(', ')}. ` +
+      'Add the correct field name to readCheckoutUrl.',
+  );
+}
+
+function readString(data: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = data[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  throw new Error(`JoonaPay response is missing ${keys.join('/')}: ${Object.keys(data).join(', ')}`);
+}
+
+/**
+ * JoonaPay as a `PaymentProvider`.
+ *
+ * What this provider genuinely cannot do, declared rather than faked:
+ *
+ * - **No auto-charge.** Every payment needs the customer at a checkout page.
+ *   A subscription engine that assumes silent renewal will mark every renewal
+ *   failed within seconds, which is why `autoCharge` is false and visible.
+ * - **No USSD push.** The Developer API collects through a hosted page; the
+ *   customer picks Mobile Money, card or Wave there. Requesting `mode: 'ussd'`
+ *   still returns a link — `selectProvider` prefers a pushing provider when one
+ *   is configured alongside.
+ * - **No refunds.** The Developer API exposes payouts, not refunds. A payout is
+ *   a different operation with a different balance and no link to the original
+ *   payment, so calling it a refund here would be a lie the ledger inherits.
+ */
+@Injectable()
+export class JoonapayProvider implements PaymentProvider, OnModuleInit {
+  readonly id = 'joonapay';
+  private readonly log = new Logger(JoonapayProvider.name);
+
+  constructor(
+    private readonly client: JoonapayClient,
+    private readonly config: AppConfigService,
+    private readonly registry: PaymentRegistry,
+  ) {}
+
+  onModuleInit(): void {
+    // An unconfigured provider does NOT register. Registering one that cannot
+    // charge is worse than having none: `selectProvider` would route a payment
+    // to it and the customer would meet the failure, rather than the operator
+    // meeting a clear "no configured provider settles XAF" at the first attempt.
+    if (!this.config.joonapay) {
+      this.log.warn('JoonaPay is installed but not configured — it will not accept payments');
+      return;
+    }
+    this.registry.register(this);
+  }
+
+  get capabilities(): ProviderCapabilities {
+    return {
+      autoCharge: false,
+      paymentLinks: true,
+      ussdPush: false,
+      methods: ['mobile-money', 'card'],
+      currencies: this.config.joonapay?.currencies ?? ['XOF'],
+      refunds: 'none',
+    };
+  }
+
+  async charge(request: ChargeRequest): Promise<ChargeResult> {
+    const settings = this.config.joonapay;
+    if (!settings) return { outcome: 'failed', reason: 'JoonaPay is not configured', retryable: false };
+
+    const countryUuid =
+      (typeof request.metadata?.['country_uuid'] === 'string'
+        ? (request.metadata['country_uuid'] as string)
+        : undefined) ?? settings.countryUuid;
+    if (!countryUuid) {
+      return {
+        outcome: 'failed',
+        reason: 'JOONAPAY_COUNTRY_UUID is not set and none was supplied',
+        retryable: false,
+      };
+    }
+
+    const dueDate = new Date(Date.now() + settings.dueDays * 86_400_000).toISOString().slice(0, 10);
+
+    try {
+      const data = await this.client.call<Record<string, unknown>>('POST', '/payments', {
+        amount: toJoonapayAmount(request.amount, request.currency),
+        currency: request.currency,
+        country_uuid: countryUuid,
+        due_date: dueDate,
+        description: request.description,
+        merchant_transaction_id: request.externalId,
+        ...(request.email ? { customer_email: request.email } : {}),
+        ...(settings.webhookUrl ? { webhook_url: requireHttps(settings.webhookUrl, 'JOONAPAY_WEBHOOK_URL') } : {}),
+        ...(request.returnUrl ? { success_url: requireHttps(request.returnUrl, 'returnUrl') } : {}),
+        ...(request.cancelUrl ? { cancel_url: requireHttps(request.cancelUrl, 'cancelUrl') } : {}),
+      });
+
+      return {
+        outcome: 'awaiting-customer',
+        reference: readString(data, 'reference', 'payment_request_uuid', 'uuid'),
+        paymentUrl: readCheckoutUrl(data),
+      };
+    } catch (error) {
+      const joonapay = error instanceof JoonapayError ? error : undefined;
+      if (joonapay?.requestId) {
+        this.log.warn(`JoonaPay charge failed (request ${joonapay.requestId}): ${joonapay.message}`);
+      }
+      return {
+        outcome: 'failed',
+        reason: (error as Error).message,
+        // A conflict is a guard: retrying the identical call changes nothing.
+        retryable: joonapay ? joonapay.isTransient : false,
+      };
+    }
+  }
+
+  async get(reference: string): Promise<PaymentSnapshot> {
+    const data = await this.client.call<Record<string, unknown>>(
+      'GET',
+      `/payments/${encodeURIComponent(reference)}`,
+    );
+    const status = typeof data['status'] === 'string' ? data['status'] : 'pending';
+    return {
+      reference: readString(data, 'reference', 'payment_request_uuid', 'uuid'),
+      state: toPaymentState(status),
+      amount: String(data['amount'] ?? '0'),
+      currency: String(data['currency'] ?? ''),
+      failureReason: status.toLowerCase() === 'expired' ? 'expired' : null,
+      settledAt: typeof data['paid_at'] === 'string' ? data['paid_at'] : null,
+    };
+  }
+
+  async refund(): Promise<{ reference: string }> {
+    // Deliberately not a payout. A payout draws on a different balance, targets
+    // a registered beneficiary and carries no link back to the payment — an
+    // accounting reversal it is not.
+    throw new Error(
+      'JoonaPay exposes no refund endpoint. Reverse this manually, or route refundable ' +
+        'payments through a provider whose capabilities declare refunds.',
+    );
+  }
+
+  verifyWebhook(rawBody: Buffer | string, headers: Record<string, unknown>): ProviderEvent | null {
+    const secret = this.config.joonapay?.webhookSecret;
+    if (!secret) {
+      // Fail closed. An unverifiable webhook is an unauthenticated request that
+      // moves orders to paid.
+      this.log.error('JOONAPAY_WEBHOOK_SECRET is not set — refusing to trust the webhook');
+      return null;
+    }
+
+    const signature = headers['x-webhook-signature'];
+    if (!verifyWebhookSignature(rawBody, typeof signature === 'string' ? signature : undefined, secret)) {
+      return null;
+    }
+
+    let event: JoonapayPaymentWebhook;
+    try {
+      event = JSON.parse(rawBody.toString()) as JoonapayPaymentWebhook;
+    } catch {
+      return null;
+    }
+
+    // Payout groups share the webhook channel but are not customer payments.
+    if (!event.event?.startsWith('payment.')) return null;
+
+    return {
+      provider: this.id,
+      reference: event.data.reference,
+      externalId: event.data.merchant_transaction_id ?? undefined,
+      state: toPaymentState(event.data.status),
+      amount: String(event.data.paid_amount ?? event.data.amount),
+      currency: event.data.currency,
+      failureReason: event.event === 'payment.failed' ? (event.data.status ?? 'failed') : null,
+      occurredAt: event.data.paid_at ?? event.timestamp,
+    };
+  }
+}

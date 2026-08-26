@@ -1,0 +1,24 @@
+services:
+  # tusd — resumable uploads. Writes straight to the MinIO bucket; the API only
+  # hears about a file once it is completely stored.
+  tusd:
+    image: tusproject/tusd:v2.9.0
+    restart: unless-stopped
+    depends_on:
+      - minio
+    command:
+      - -verbose
+      - -port=8080
+      - -behind-proxy
+      - -s3-bucket={{brand}}
+      - -s3-endpoint=http://minio:9000
+      - -hooks-http=http://host.docker.internal:8080/uploads/hook
+      - -hooks-enabled-events=post-finish
+    environment:
+      AWS_ACCESS_KEY_ID: {{brand}}
+      AWS_SECRET_ACCESS_KEY: {{brand}}_dev_pwd
+      AWS_REGION: ${S3_REGION:-us-east-1}
+    ports:
+      - '1080:8080'
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'

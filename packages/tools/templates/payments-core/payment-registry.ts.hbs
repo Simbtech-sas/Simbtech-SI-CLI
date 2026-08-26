@@ -1,0 +1,102 @@
+import { Injectable, Logger } from '@nestjs/common';
+import {
+  selectProvider,
+  type ChargeRequest,
+  type PaymentProvider,
+  type ProviderEvent,
+} from '../domain/payment-provider.port';
+
+/**
+ * Applies a terminal outcome to a provider's own records. Returns false when it
+ * was already applied — which is what keeps a reconciliation poll and a late
+ * webhook from both fulfilling the same payment.
+ */
+export type PaymentReconciler = (event: ProviderEvent) => Promise<boolean>;
+
+/**
+ * Which payment providers this deployment actually has.
+ *
+ * Providers register themselves in `onModuleInit` rather than being injected as
+ * an array. That is what keeps the count open: this file is identical whether
+ * zero, one or both providers are installed, and adding a third means adding a
+ * module — not editing a list here and remembering to keep it in sync.
+ */
+@Injectable()
+export class PaymentRegistry {
+  private readonly log = new Logger(PaymentRegistry.name);
+  private readonly providers = new Map<string, PaymentProvider>();
+  private readonly reconcilers = new Map<string, PaymentReconciler>();
+
+  register(provider: PaymentProvider): void {
+    if (this.providers.has(provider.id)) {
+      throw new Error(`payment provider "${provider.id}" is registered twice`);
+    }
+    this.providers.set(provider.id, provider);
+    const caps = provider.capabilities;
+    this.log.log(
+      `payment provider ${provider.id}: ${caps.currencies.join('/')} via ${caps.methods.join(', ')}` +
+        `${caps.ussdPush ? ', USSD push' : ''}${caps.autoCharge ? ', auto-charge' : ''}`,
+    );
+  }
+
+  /**
+   * How a provider's records get updated when something OTHER than its webhook
+   * discovers the outcome — a reconciliation poll, or an operator.
+   *
+   * Registered by each provider's repository, the same way providers register
+   * themselves, so the caller stays provider-agnostic: a workflow polling for a
+   * lost webhook must not contain a switch on provider name.
+   */
+  registerReconciler(providerId: string, apply: PaymentReconciler): void {
+    this.reconcilers.set(providerId, apply);
+  }
+
+  /**
+   * Apply a terminal outcome found outside the webhook path.
+   *
+   * Returns false when the row had already moved — the webhook arrived first, or
+   * a previous poll won. Both are ordinary, and both must stay a no-op.
+   */
+  async applyTerminal(event: ProviderEvent): Promise<boolean> {
+    const apply = this.reconcilers.get(event.provider);
+    if (!apply) {
+      this.log.error(`no reconciler registered for provider "${event.provider}"`);
+      return false;
+    }
+    return apply(event);
+  }
+
+  all(): PaymentProvider[] {
+    return [...this.providers.values()];
+  }
+
+  byId(id: string): PaymentProvider {
+    const provider = this.providers.get(id);
+    if (!provider) {
+      throw new Error(
+        `payment provider "${id}" is not configured. Available: ${[...this.providers.keys()].join(', ') || 'none'}`,
+      );
+    }
+    return provider;
+  }
+
+  /** Route by currency and method. Refuses rather than guessing. */
+  select(request: ChargeRequest): PaymentProvider {
+    return selectProvider(this.all(), request);
+  }
+
+  /**
+   * Handle a webhook without knowing which provider sent it.
+   *
+   * Each provider is asked to verify; only the one holding the matching secret
+   * can. A provider that returns null has NOT rejected the payment — it has
+   * declined to vouch for the request, and an unvouched webhook is a stranger.
+   */
+  verifyWebhook(rawBody: Buffer | string, headers: Record<string, unknown>) {
+    for (const provider of this.providers.values()) {
+      const event = provider.verifyWebhook(rawBody, headers);
+      if (event) return event;
+    }
+    return null;
+  }
+}

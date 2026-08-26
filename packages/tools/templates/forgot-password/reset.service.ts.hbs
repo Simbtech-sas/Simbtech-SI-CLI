@@ -1,0 +1,127 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { and, eq, isNull, lt } from 'drizzle-orm';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { DatabaseService } from '../../../database/database.service';
+import { passwordResetTokens, refreshTokens, users } from '../../../database/schema';
+import { AppConfigService } from '../../../config/app-config.service';
+import { MailerService } from '../../notifications/application/mailer.service';
+import { PasswordService } from '../infrastructure/password.service';
+import { IamRepository } from '../infrastructure/iam.repository';
+
+const TTL_MINUTES = 60;
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * Password reset by emailed single-use token.
+ *
+ * The traps this closes, in order of how often they are left open:
+ *
+ * 1. **Account enumeration.** `request()` returns nothing regardless of whether
+ *    the address exists. A 404 for unknown addresses turns the endpoint into a
+ *    membership oracle for any email list.
+ * 2. **Token at rest.** Stored hashed. A database leak must not yield a working
+ *    reset link for every account.
+ * 3. **Reuse.** `used_at` is set on redemption, inside the same transaction as
+ *    the password change.
+ * 4. **Session survival.** A reset revokes every refresh-token family. If the
+ *    password changed because it was compromised, existing sessions are exactly
+ *    what you are trying to end.
+ */
+@Injectable()
+export class PasswordResetService {
+  private readonly log = new Logger(PasswordResetService.name);
+
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly config: AppConfigService,
+    private readonly mailer: MailerService,
+    private readonly passwords: PasswordService,
+    private readonly iam: IamRepository,
+  ) {}
+
+  /**
+   * Always resolves. The caller must return the same response either way — the
+   * whole point is that the response reveals nothing.
+   */
+  async request(email: string, ip?: string): Promise<void> {
+    const user = await this.iam.findUserByEmail(email.trim().toLowerCase());
+    if (!user) {
+      // Deliberately silent. Logged at debug only: an info-level log of "reset
+      // requested for unknown address" recreates the oracle inside your logs.
+      this.log.debug('reset requested for an address with no account');
+      return;
+    }
+
+    const token = randomBytes(32).toString('base64url');
+    await this.database.db.insert(passwordResetTokens).values({
+      userId: user.id,
+      tokenHash: sha256(token),
+      expiresAt: new Date(Date.now() + TTL_MINUTES * 60_000),
+      requestedIp: ip ?? null,
+    });
+
+    await this.mailer.send({
+      to: user.email,
+      template: 'password-reset',
+      data: {
+        name: user.name,
+        resetUrl: `${this.config.webPublicUrl}/reset-password?token=${token}`,
+        expiresInMinutes: TTL_MINUTES,
+      },
+    });
+  }
+
+  /** Redeem a token. Returns false for anything invalid, without saying which. */
+  async reset(token: string, newPassword: string): Promise<boolean> {
+    const hash = sha256(token);
+
+    return this.database.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(passwordResetTokens)
+        .where(and(eq(passwordResetTokens.tokenHash, hash), isNull(passwordResetTokens.usedAt)))
+        .limit(1);
+
+      if (!row || row.expiresAt < new Date()) return false;
+
+      // Constant-time, so the comparison cannot be probed even though the lookup
+      // above was already an exact index hit.
+      const presented = Buffer.from(hash, 'utf8');
+      const stored = Buffer.from(row.tokenHash, 'utf8');
+      if (presented.length !== stored.length || !timingSafeEqual(presented, stored)) return false;
+
+      const passwordHash = await this.passwords.hash(newPassword);
+
+      // One transaction: consume the token, change the password, end every
+      // session. A partial application of these three is a security hole.
+      await tx
+        .update(passwordResetTokens)
+        .set({ usedAt: new Date() })
+        .where(eq(passwordResetTokens.id, row.id));
+      await tx
+        .update(users)
+        .set({ passwordHash, updatedAt: new Date() })
+        .where(eq(users.id, row.userId));
+
+      // End every session. If the password changed because it was compromised,
+      // the attacker's existing refresh token is exactly what must stop working.
+      await tx
+        .update(refreshTokens)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(refreshTokens.userId, row.userId), isNull(refreshTokens.revokedAt)));
+      return true;
+    });
+  }
+
+  /** Expired tokens are useless; keeping them is only a liability. */
+  @Cron(CronExpression.EVERY_HOUR)
+  async prune(): Promise<void> {
+    await this.database.db
+      .delete(passwordResetTokens)
+      .where(lt(passwordResetTokens.expiresAt, new Date()));
+  }
+}

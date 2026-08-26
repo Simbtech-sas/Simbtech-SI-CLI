@@ -1,0 +1,195 @@
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { AppConfigService } from '../../../config/app-config.service';
+import { PaymentRegistry } from '../../payments/application/payment-registry';
+import type {
+  ChargeRequest,
+  ChargeResult,
+  PaymentProvider,
+  PaymentSnapshot,
+  PaymentState,
+  ProviderCapabilities,
+  ProviderEvent,
+} from '../../payments/domain/payment-provider.port';
+import { KpayService } from './kpay.service';
+import { KpayError } from '../domain/kpay.client';
+import { verifyWebhookSignature } from '../domain/signatures';
+import { CURRENCIES } from '../domain/providers';
+import type { KpayProviderCode, KpayWebhookEvent, PaymentRequest } from '../domain/kpay.types';
+
+/** KPay's uppercase statuses, in the port's vocabulary. */
+function toPaymentState(status: string): PaymentState {
+  switch (status.toUpperCase()) {
+    case 'COMPLETED':
+      return 'settled';
+    case 'FAILED':
+      return 'failed';
+    case 'CANCELLED':
+      return 'cancelled';
+    case 'REFUNDED':
+      return 'refunded';
+    case 'PROCESSING':
+      return 'processing';
+    default:
+      // Unknown is never settled — defaulting the other way marks orders paid.
+      return 'pending';
+  }
+}
+
+/**
+ * KPay as a `PaymentProvider`.
+ *
+ * The adapter's whole job is the translation the port cannot do generically:
+ * KPay's request shape is a three-armed union whose arms reject each other's
+ * fields with a 400, and the port's flat `ChargeRequest` has to be sorted into
+ * the right arm here rather than at every call site.
+ */
+@Injectable()
+export class KpayProvider implements PaymentProvider, OnModuleInit {
+  readonly id = 'kpay';
+  private readonly log = new Logger(KpayProvider.name);
+
+  constructor(
+    private readonly kpay: KpayService,
+    private readonly config: AppConfigService,
+    private readonly registry: PaymentRegistry,
+  ) {}
+
+  onModuleInit(): void {
+    // An unconfigured provider does NOT register. Registering one that cannot
+    // charge is worse than having none: `selectProvider` would route a payment
+    // to it and the customer would meet the failure, rather than the operator
+    // meeting a clear "no configured provider settles XAF" at the first attempt.
+    if (!this.config.kpay) {
+      this.log.warn('KPay is installed but not configured — it will not accept payments');
+      return;
+    }
+    this.registry.register(this);
+  }
+
+  get capabilities(): ProviderCapabilities {
+    return {
+      // Every payment needs the customer: a USSD prompt to approve, or a page
+      // to open. Nothing here charges silently.
+      autoCharge: false,
+      paymentLinks: true,
+      ussdPush: true,
+      methods: ['mobile-money', 'card', 'paypal'],
+      currencies: CURRENCIES,
+      // Full amount only, within 7 days, and the fee is not returned.
+      refunds: 'full',
+    };
+  }
+
+  async charge(request: ChargeRequest): Promise<ChargeResult> {
+    let input: PaymentRequest;
+    try {
+      input = await this.toKpayRequest(request);
+    } catch (error) {
+      return { outcome: 'failed', reason: (error as Error).message, retryable: false };
+    }
+
+    try {
+      const response = await this.kpay.initPayment(input);
+      return {
+        // Never 'paid': KPay answers before the customer has acted. Treating
+        // this response as settlement is the classic double-fulfilment bug.
+        outcome: 'awaiting-customer',
+        reference: response.reference,
+        paymentUrl: response.gatewayUrl,
+      };
+    } catch (error) {
+      const kpay = error instanceof KpayError ? error : undefined;
+      return {
+        outcome: 'failed',
+        reason: (error as Error).message,
+        retryable: kpay ? kpay.isTransient : false,
+      };
+    }
+  }
+
+  private async toKpayRequest(request: ChargeRequest): Promise<PaymentRequest> {
+    const common = {
+      amount: request.amount,
+      externalId: request.externalId,
+      description: request.description,
+      customerEmail: request.email,
+      metadata: request.metadata,
+    };
+
+    if (request.method === 'card' || request.method === 'paypal') {
+      if (!request.returnUrl) throw new Error(`${request.method} payments need a returnUrl`);
+      return { ...common, method: request.method, returnUrl: request.returnUrl, cancelUrl: request.cancelUrl };
+    }
+
+    // A USSD push needs an operator, and KPay will not guess one for us.
+    if (request.mode === 'ussd' && request.phoneNumber) {
+      const hint =
+        typeof request.metadata?.['provider'] === 'string'
+          ? (request.metadata['provider'] as KpayProviderCode)
+          : ((await this.kpay.predictProvider(request.phoneNumber)).provider as KpayProviderCode);
+      return {
+        ...common,
+        method: 'mobile-money',
+        mode: 'ussd',
+        provider: hint,
+        phoneNumber: request.phoneNumber,
+      };
+    }
+
+    if (!request.returnUrl) throw new Error('gateway payments need a returnUrl');
+    return {
+      ...common,
+      method: 'mobile-money',
+      mode: 'gateway',
+      returnUrl: request.returnUrl,
+      cancelUrl: request.cancelUrl,
+    };
+  }
+
+  async get(reference: string): Promise<PaymentSnapshot> {
+    const payment = await this.kpay.getPayment(reference);
+    return {
+      reference: payment.reference,
+      state: toPaymentState(payment.status),
+      amount: String(payment.amount),
+      currency: payment.currency,
+      failureReason: payment.failureReason ?? null,
+      settledAt: payment.completedAt ?? null,
+    };
+  }
+
+  async refund(reference: string, reason?: string, externalId?: string): Promise<{ reference: string }> {
+    await this.kpay.refund(reference, reason, externalId);
+    return { reference };
+  }
+
+  verifyWebhook(rawBody: Buffer | string, headers: Record<string, unknown>): ProviderEvent | null {
+    const secret = this.config.kpay?.webhookSecret;
+    if (!secret) {
+      this.log.error('KPAY_WEBHOOK_SECRET is not set — refusing to trust the webhook');
+      return null;
+    }
+
+    const signature = headers['x-kpay-signature'];
+    if (!verifyWebhookSignature(rawBody, typeof signature === 'string' ? signature : undefined, secret)) {
+      return null;
+    }
+
+    let event: KpayWebhookEvent;
+    try {
+      event = JSON.parse(rawBody.toString()) as KpayWebhookEvent;
+    } catch {
+      return null;
+    }
+
+    return {
+      provider: this.id,
+      reference: event.reference,
+      externalId: event.externalId,
+      state: toPaymentState(event.status),
+      amount: String(event.amount),
+      failureReason: event.failureReason ?? null,
+      occurredAt: event.completedAt ?? event.timestamp,
+    };
+  }
+}

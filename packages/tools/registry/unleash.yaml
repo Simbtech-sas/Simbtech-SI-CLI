@@ -1,0 +1,32 @@
+id: unleash
+name: Unleash
+category: flags
+summary: Feature flags with gradual rollout, per-tenant targeting and kill switches
+repo: https://github.com/Unleash/unleash
+license: Apache-2.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "unleash-client"
+
+env:
+  - key: UNLEASH_URL
+    value: "http://localhost:4242/api"
+  - key: UNLEASH_API_TOKEN
+    comment: Created in the Unleash UI
+
+compose: compose.yml
+
+deploy:
+  image: unleashorg/unleash-server:6.9
+  port: 4242
+  needsDatabase: true
+  ingress: true
+  env:
+    DATABASE_URL: "postgres://{{db.username}}:{{db.password}}@{{db.host}}:5432/{{db.name}}"
+    DATABASE_SSL: "false"
+
+notes:
+  - Pass the tenant id as an Unleash context field to target a rollout at specific tenants.
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `unleash` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

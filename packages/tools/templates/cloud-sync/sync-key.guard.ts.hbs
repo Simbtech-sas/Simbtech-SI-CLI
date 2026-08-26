@@ -1,0 +1,62 @@
+import {
+  type CanActivate,
+  type ExecutionContext,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { createHash, timingSafeEqual } from 'node:crypto';
+import { and, eq, isNull } from 'drizzle-orm';
+import type { FastifyRequest } from 'fastify';
+import { DatabaseService } from '../../../database/database.service';
+import { syncInstalls } from '../../../database/schema';
+
+export type RequestWithInstall = FastifyRequest & {
+  install?: typeof syncInstalls.$inferSelect;
+};
+
+/**
+ * Authenticates an on-premise install by its sync key.
+ *
+ * A machine credential, not a user one:
+ *
+ * - It authorises exactly ONE tenant — the install's. Nothing here reads a
+ *   tenant id from the request, because a machine that could name its own tenant
+ *   could name someone else's.
+ * - It never appears on a user route, and a user token never satisfies this
+ *   guard. Two credential types with two audiences.
+ * - It is stored hashed and can be revoked per install, so one compromised site
+ *   does not force a key rotation across every customer.
+ */
+@Injectable()
+export class SyncKeyGuard implements CanActivate {
+  constructor(private readonly database: DatabaseService) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const req = context.switchToHttp().getRequest<RequestWithInstall>();
+    const header = req.headers['x-sync-key'];
+    if (typeof header !== 'string' || header.length < 32) {
+      throw new UnauthorizedException('Missing or malformed sync key');
+    }
+
+    const keyHash = createHash('sha256').update(header).digest('hex');
+    const [install] = await this.database
+      .requireAdminDb()
+      .select()
+      .from(syncInstalls)
+      .where(and(eq(syncInstalls.keyHash, keyHash), isNull(syncInstalls.revokedAt)))
+      .limit(1);
+
+    if (!install) throw new UnauthorizedException('Unknown or revoked sync key');
+
+    // Constant-time, even though the lookup above was an exact index hit — the
+    // comparison must not become the thing that leaks.
+    const a = Buffer.from(keyHash, 'utf8');
+    const b = Buffer.from(install.keyHash, 'utf8');
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException('Unknown or revoked sync key');
+    }
+
+    req.install = install;
+    return true;
+  }
+}

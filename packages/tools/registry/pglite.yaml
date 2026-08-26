@@ -1,0 +1,15 @@
+id: pglite
+name: PGlite
+category: local-first
+summary: Postgres compiled to WASM — the real query engine, in the browser or Node
+repo: https://github.com/electric-sql/pglite
+license: Apache-2.0
+flavors: [sical, sibile-capacitor, simice]
+
+deps:
+  web:
+    - "@electric-sql/pglite"
+
+notes:
+  - Lets a fully local app run the same SQL and migrations as the server build.
+  - RLS works, but with no server there is no trust boundary — treat it as ergonomics, not security.

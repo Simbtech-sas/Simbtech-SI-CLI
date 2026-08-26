@@ -1,0 +1,11 @@
+id: postgis
+name: PostGIS
+category: geo
+summary: Geospatial types, indexes and queries inside the existing Postgres
+repo: https://github.com/postgis/postgis
+license: GPL-2.0
+flavors: [sisaas, platform]
+
+notes:
+  - "Swap the postgres image for postgis/postgis:17-3.5 and add `CREATE EXTENSION postgis;` to a migration."
+  - Reuses the database you already have, so tenant RLS keeps working unchanged.

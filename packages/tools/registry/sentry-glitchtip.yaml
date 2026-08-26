@@ -1,0 +1,21 @@
+id: sentry-glitchtip
+name: GlitchTip
+category: observability
+summary: Sentry-compatible error tracking, far lighter to self-host than Sentry
+repo: https://gitlab.com/glitchtip/glitchtip
+license: MIT
+flavors: [sisaas, sibile-rn, platform]
+
+deps:
+  server:
+    - "@sentry/node"
+  web:
+    - "@sentry/nextjs"
+
+env:
+  - key: SENTRY_DSN
+    comment: From the GlitchTip project settings
+
+notes:
+  - Speaks the Sentry protocol, so the official Sentry SDKs work unchanged.
+  - "Scrub PII before sending: a stack trace with a tenant record in it is a data leak into your error tracker."

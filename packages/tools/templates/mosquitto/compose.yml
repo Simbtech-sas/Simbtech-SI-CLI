@@ -1,0 +1,15 @@
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - '1883:1883'
+      # 9101 on the host, 9001 in the container: MinIO's console — which the base
+      # template already publishes — owns 9001. The container keeps the
+      # conventional MQTT-over-WebSockets port, so mosquitto.conf is unchanged.
+      - '9101:9001'
+    volumes:
+      - mosquitto-data:/mosquitto/data
+
+volumes:
+  mosquitto-data:

@@ -1,0 +1,41 @@
+id: medusa
+name: Medusa
+category: finance
+summary: Headless commerce engine — products, carts, orders, payments, fulfilment
+repo: https://github.com/medusajs/medusa
+license: MIT
+flavors: [sisaas, sibile-rn, sibile-capacitor, platform]
+
+deps:
+  server:
+    - "@medusajs/js-sdk"
+  web:
+    - "@medusajs/js-sdk"
+
+env:
+  - key: MEDUSA_BACKEND_URL
+    value: http://localhost:9000
+    comment: Medusa server API
+  - key: MEDUSA_PUBLISHABLE_KEY
+    comment: Created in the Medusa admin; scopes requests to a sales channel
+  - key: MEDUSA_API_TOKEN
+    comment: Admin API token for server-to-server calls
+
+files:
+  - src: medusa.service.ts.hbs
+    dest: src/modules/medusa/medusa.service.ts
+  - src: medusa.module.ts.hbs
+    dest: src/modules/medusa/medusa.module.ts
+
+register:
+  - anchor: modules
+    snippet: MedusaModule,
+    import: "import { MedusaModule } from './modules/medusa/medusa.module';"
+
+notes:
+  - "Medusa is a separate Node application, not a library. Create it with `npx create-medusa-app@latest` and run it alongside this API — the generated module here is the client."
+  - "It needs its own Postgres and Redis. Do not point it at the application database; its migrations own its schema."
+  - "Medusa has no tenant concept. Map one tenant to one sales channel (or one Medusa store) and always pass the publishable key that scopes to it — otherwise a request reads across tenants."
+  - "Money in the Medusa API is an INTEGER in the currency's minor unit (cents), not a decimal string. Convert at this boundary; do not let a float in between."
+  - "v2 only. The v1 API is a different product and the SDK is not compatible."
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `medusa` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

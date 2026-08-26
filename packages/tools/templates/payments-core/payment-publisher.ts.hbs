@@ -1,0 +1,129 @@
+import { Injectable } from '@nestjs/common';
+import {
+  PaymentCancelled,
+  PaymentFailed,
+  PaymentReconciled,
+  PaymentRequested,
+  PaymentSettled,
+} from '@{{brand}}/events';
+import type { TenantTx } from '../../../database/database.service';
+import { OutboxService } from '../../events/application/outbox.service';
+import type { ProviderEvent } from '../domain/payment-provider.port';
+
+/**
+ * Turns a verified provider webhook into a domain event.
+ *
+ * Every provider funnels through here, so invoicing, subscriptions, the ledger
+ * and notifications subscribe once and never learn a provider's name.
+ *
+ * It takes the caller's transaction, and that is the whole point: the event and
+ * the payment's status change commit together. Publishing after the commit means
+ * a crash in between records money nobody was told about; publishing before it
+ * means consumers act on a payment that then rolls back.
+ */
+@Injectable()
+export class PaymentPublisher {
+  constructor(private readonly outbox: OutboxService) {}
+
+  /**
+   * Call INSIDE the transaction that applied the status change, and only when
+   * that change actually moved a row. A redelivered webhook updates nothing, so
+   * it must publish nothing — otherwise the database is idempotent and every
+   * consumer downstream is not.
+   */
+  /**
+   * Announce that a payment has been asked for and is waiting on the customer.
+   *
+   * Published in the transaction that records it, so from the instant a payment
+   * exists something durable knows it is outstanding. Without this a payment
+   * whose webhook never arrives is invisible — nothing is waiting for it.
+   */
+  async publishRequested(
+    tx: TenantTx,
+    payment: {
+      provider: string;
+      reference: string;
+      externalId?: string;
+      amount: string;
+      currency: string;
+      paymentUrl?: string;
+    },
+    tenantId: string,
+  ): Promise<void> {
+    await this.outbox.publish(tx, PaymentRequested, {
+      aggregateId: payment.reference,
+      tenantId,
+      payload: { ...payment, occurredAt: new Date().toISOString() },
+    });
+  }
+
+  /**
+   * A terminal outcome found by ASKING the provider, because no webhook came.
+   *
+   * Separate from `publish` on purpose: every one of these is an undelivered
+   * webhook. A trickle is normal for Mobile Money; a spike means the endpoint is
+   * unreachable, and nothing else would surface that — the money still arrives.
+   */
+  async publishReconciled(
+    tx: TenantTx,
+    event: ProviderEvent & { state: 'settled' | 'failed' | 'cancelled' },
+    tenantId: string,
+    afterSeconds: number,
+  ): Promise<void> {
+    await this.outbox.publish(tx, PaymentReconciled, {
+      aggregateId: event.reference,
+      tenantId,
+      payload: {
+        provider: event.provider,
+        reference: event.reference,
+        externalId: event.externalId,
+        amount: event.amount ?? '0',
+        currency: event.currency ?? '',
+        state: event.state,
+        afterSeconds,
+        occurredAt: new Date(event.occurredAt).toISOString(),
+      },
+    });
+    // The normal event too, so consumers that settle invoices need no special
+    // case for "this one came from a poll".
+    await this.publish(tx, event, tenantId);
+  }
+
+  async publish(tx: TenantTx, event: ProviderEvent, tenantId: string): Promise<void> {
+    const payload = {
+      provider: event.provider,
+      reference: event.reference,
+      externalId: event.externalId,
+      amount: event.amount ?? '0',
+      currency: event.currency ?? '',
+      occurredAt: new Date(event.occurredAt).toISOString(),
+    };
+
+    switch (event.state) {
+      case 'settled':
+        return this.outbox.publish(tx, PaymentSettled, {
+          aggregateId: event.reference,
+          tenantId,
+          payload,
+        });
+      case 'failed':
+        return this.outbox.publish(tx, PaymentFailed, {
+          aggregateId: event.reference,
+          tenantId,
+          payload: { ...payload, reason: event.failureReason ?? null },
+        });
+      case 'cancelled':
+        // Not a failure. Nothing went wrong, so nothing is retried and nobody
+        // is chased — which is a different downstream reaction entirely.
+        return this.outbox.publish(tx, PaymentCancelled, {
+          aggregateId: event.reference,
+          tenantId,
+          payload: { ...payload, reason: event.failureReason ?? null },
+        });
+      default:
+        // pending / processing / refunded announce nothing: they are not
+        // decisions, and a consumer that acts on them fulfils twice.
+        return;
+    }
+  }
+}

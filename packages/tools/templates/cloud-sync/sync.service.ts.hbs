@@ -1,0 +1,462 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { createHash, randomBytes } from 'node:crypto';
+import { and, asc, desc, eq, gt, ne, or, isNull } from 'drizzle-orm';
+import { DatabaseService, type TenantTx } from '../../../database/database.service';
+import { syncChanges, syncConflicts, syncInstalls } from '../../../database/schema';
+import { reconcile, type Resolution } from '../domain/reconciliation';
+import { Inject } from '@nestjs/common';
+// `import type` is required: with isolatedModules + emitDecoratorMetadata, a
+// type used in a decorated constructor must not look like a value import.
+import type { StoragePort } from '../../media/domain/storage-port';
+import { STORAGE_PORT } from '../../media/domain/storage-port';
+
+const MAX_BATCH = 500;
+
+export interface ChangeRecord {
+  entity: string;
+  entityId: string;
+  operation: 'upsert' | 'delete';
+  payload?: Record<string, unknown> | null;
+  /**
+   * The version the install last saw for this record.
+   *
+   * This is what detects a conflict: if the server has moved past it, someone
+   * else changed the record while this install was offline. 0 means "I believe
+   * this record is new".
+   */
+  baseVersion: number;
+  /** The install's local clock, used only by the last-write-wins policy. */
+  updatedAt: string;
+}
+
+/**
+ * What a pull returns. Deliberately NOT the same shape as a push.
+ *
+ * A pulled change carries the `version` the record reached; the install stores
+ * it and sends it back as `baseVersion` on its next push. Reusing one type for
+ * both directions is how the two ends stop meaning the same thing.
+ */
+export interface PulledChange {
+  seq: number;
+  entity: string;
+  entityId: string;
+  operation: 'upsert' | 'delete';
+  payload: Record<string, unknown> | null;
+  /** Store this; send it as `baseVersion` when pushing an edit of this record. */
+  version: number;
+  updatedAt: string;
+}
+
+export interface PullResult {
+  changes: PulledChange[];
+  cursor: number;
+  /** True when the batch was capped — the client should pull again immediately. */
+  more: boolean;
+}
+
+export interface PushResult {
+  applied: number;
+  skipped: number;
+  /** Resolved against the entity's policy without a human. */
+  reconciled: Array<{ entity: string; entityId: string; outcome: string }>;
+  /** Parked for a person. The install should surface these, not retry them. */
+  escalated: Array<{ conflictId: string; entity: string; entityId: string; reason: string }>;
+  /** Rejected with the authoritative record, so the client can converge. */
+  rejected: Array<{ entity: string; entityId: string; remote: Record<string, unknown> }>;
+  cursor: number;
+}
+
+export interface SyncSchedule {
+  intervalSeconds: number | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  timezone: string;
+}
+
+/**
+ * Two-way sync between an on-premise install and this cloud instance.
+ *
+ * ## How it works
+ *
+ * Every syncable write appends to `sync_changes`, an ordered log. An install
+ * pulls everything after its cursor and pushes its own changes back. The cursor
+ * advances only on a successful pull, so an interrupted sync resumes rather than
+ * restarting.
+ *
+ * Changes are tagged with the install that produced them and never echoed back
+ * to their author — without that, two installs bounce the same row forever.
+ *
+ * ## Conflicts
+ *
+ * The default is last-write-wins on `updatedAt`, which **silently discards the
+ * loser**. That is acceptable for reference data and wrong for anything a person
+ * cares about: two sites editing one record offline both believe they succeeded.
+ *
+ * Before this touches real data, decide per entity:
+ *   - cloud always wins (safe for anything the cloud owns)
+ *   - reject and surface (correct when a human must choose)
+ *   - merge (only where the type genuinely merges — counters, sets, CRDTs)
+ */
+@Injectable()
+export class SyncService {
+  private readonly log = new Logger(SyncService.name);
+
+  constructor(
+    private readonly database: DatabaseService,
+    @Inject(STORAGE_PORT) private readonly storage: StoragePort,
+  ) {}
+
+  /** Issue a key. Returned ONCE — only its hash is kept. */
+  async createInstall(tenantId: string, label: string): Promise<{ installId: string; key: string }> {
+    const key = randomBytes(32).toString('base64url');
+    const [install] = await this.database
+      .requireAdminDb()
+      .insert(syncInstalls)
+      .values({ tenantId, label, keyHash: sha256(key) })
+      .returning({ id: syncInstalls.id });
+    // The plaintext is never stored, so it cannot be shown again. Losing it means
+    // issuing a new one, which is the correct trade for a machine credential.
+    return { installId: install!.id, key };
+  }
+
+  async revokeInstall(installId: string): Promise<void> {
+    await this.database
+      .requireAdminDb()
+      .update(syncInstalls)
+      .set({ revokedAt: new Date() })
+      .where(eq(syncInstalls.id, installId));
+  }
+
+  /**
+   * Current version of a record, from the change log.
+   *
+   * 0 when the record has never been seen, which is what makes a first insert
+   * distinguishable from an edit of something that was deleted.
+   */
+  async currentVersion(tenantId: string, entity: string, entityId: string): Promise<number> {
+    const [row] = await this.database
+      .requireAdminDb()
+      .select({ version: syncChanges.version })
+      .from(syncChanges)
+      .where(
+        and(
+          eq(syncChanges.tenantId, tenantId),
+          eq(syncChanges.entity, entity),
+          eq(syncChanges.entityId, entityId),
+        ),
+      )
+      .orderBy(desc(syncChanges.version))
+      .limit(1);
+    return row?.version ?? 0;
+  }
+
+  /** Record a change for propagation. Call inside the transaction that made it. */
+  async recordChange(
+    tx: TenantTx,
+    tenantId: string,
+    change: Omit<ChangeRecord, 'updatedAt' | 'baseVersion'>,
+    version: number,
+    originInstallId?: string | null,
+  ): Promise<void> {
+    await tx.insert(syncChanges).values({
+      tenantId,
+      entity: change.entity,
+      entityId: change.entityId,
+      operation: change.operation,
+      payload: change.payload ?? null,
+      version,
+      originInstallId: originInstallId ?? null,
+    });
+  }
+
+  // ── schedule ────────────────────────────────────────────────────────────────
+
+  /**
+   * When this install should sync.
+   *
+   * Returned on every handshake so the SERVER owns the schedule: changing a
+   * site's cadence must not require touching the machine, which may be behind a
+   * customer's firewall and reachable only by someone driving there.
+   */
+  schedule(install: typeof syncInstalls.$inferSelect): SyncSchedule {
+    return {
+      intervalSeconds: install.intervalSeconds,
+      windowStart: install.windowStart,
+      windowEnd: install.windowEnd,
+      timezone: install.timezone,
+    };
+  }
+
+  async setSchedule(installId: string, schedule: Partial<SyncSchedule>): Promise<void> {
+    if (schedule.intervalSeconds != null && schedule.intervalSeconds < 60) {
+      // Below a minute this is polling, not syncing, and it will saturate a
+      // metered link. The database enforces it too; this is the friendly error.
+      throw new Error('interval must be at least 60 seconds');
+    }
+    await this.database
+      .requireAdminDb()
+      .update(syncInstalls)
+      .set({
+        intervalSeconds: schedule.intervalSeconds ?? null,
+        windowStart: schedule.windowStart ?? null,
+        windowEnd: schedule.windowEnd ?? null,
+        ...(schedule.timezone ? { timezone: schedule.timezone } : {}),
+      })
+      .where(eq(syncInstalls.id, installId));
+  }
+
+  /**
+   * Changes after the install's cursor, excluding the ones it produced.
+   *
+   * Capped, with `more` telling the client to come straight back — an install
+   * that has been offline for a month must not be answered with one enormous
+   * response that times out and can never complete.
+   */
+  async pull(install: typeof syncInstalls.$inferSelect, since?: number): Promise<PullResult> {
+    const from = since ?? install.cursor;
+    const db = this.database.requireAdminDb();
+
+    const rows = await db
+      .select()
+      .from(syncChanges)
+      .where(
+        and(
+          eq(syncChanges.tenantId, install.tenantId),
+          gt(syncChanges.seq, from),
+          // Never echo an install's own writes back at it.
+          or(isNull(syncChanges.originInstallId), ne(syncChanges.originInstallId, install.id)),
+        ),
+      )
+      .orderBy(asc(syncChanges.seq))
+      .limit(MAX_BATCH + 1);
+
+    const more = rows.length > MAX_BATCH;
+    const batch = more ? rows.slice(0, MAX_BATCH) : rows;
+    const cursor = batch.length > 0 ? batch[batch.length - 1]!.seq : from;
+
+    await db
+      .update(syncInstalls)
+      .set({ cursor, lastSeenAt: new Date() })
+      .where(eq(syncInstalls.id, install.id));
+
+    return {
+      changes: batch.map((r) => ({
+        seq: r.seq,
+        entity: r.entity,
+        entityId: r.entityId,
+        operation: r.operation,
+        payload: r.payload,
+        version: r.version,
+        updatedAt: r.createdAt.toISOString(),
+      })),
+      cursor,
+      more,
+    };
+  }
+
+  /**
+   * Apply a batch from an install, reconciling anything that changed on both
+   * sides while it was offline.
+   *
+   * For each change:
+   *   1. Compare the pushed `baseVersion` against the server's current version.
+   *   2. Equal — nobody else touched it. Fast-forward and apply.
+   *   3. Higher on the server — a genuine conflict. Run the entity's policy.
+   *   4. The policy either applies a winner, rejects with the authoritative
+   *      record, or escalates into `sync_conflicts` for a person.
+   *
+   * One transaction for the whole batch: a half-applied batch leaves the install
+   * unable to work out what to resend. With `Idempotency-Key` on the route, a
+   * retried batch cannot apply twice either.
+   */
+  async push(
+    install: typeof syncInstalls.$inferSelect,
+    changes: ChangeRecord[],
+    apply: (tx: TenantTx, change: ChangeRecord, version: number) => Promise<void>,
+    readRemote: (tx: TenantTx, entity: string, entityId: string) => Promise<Record<string, unknown> | null>,
+  ): Promise<PushResult> {
+    if (changes.length > MAX_BATCH) {
+      throw new Error(`batch too large: ${changes.length} > ${MAX_BATCH}`);
+    }
+
+    const result: PushResult = {
+      applied: 0,
+      skipped: 0,
+      reconciled: [],
+      escalated: [],
+      rejected: [],
+      cursor: install.cursor,
+    };
+
+    await this.database.runInTenantContext(install.tenantId, async (tx) => {
+      for (const change of changes) {
+        const current = await this.currentVersion(install.tenantId, change.entity, change.entityId);
+
+        // No one else moved the record. The common path.
+        if (current === change.baseVersion) {
+          await apply(tx, change, current + 1);
+          await this.recordChange(tx, install.tenantId, change, current + 1, install.id);
+          result.applied++;
+          continue;
+        }
+
+        // The install is behind but pushing the same version it already sent —
+        // a retry of something already applied. Nothing to do.
+        if (current > change.baseVersion && change.operation === 'upsert') {
+          const remote = (await readRemote(tx, change.entity, change.entityId)) ?? {};
+          const resolution: Resolution = reconcile({
+            entity: change.entity,
+            local: change.payload ?? {},
+            remote,
+            localUpdatedAt: change.updatedAt,
+            remoteUpdatedAt: new Date().toISOString(),
+          });
+
+          if (resolution.action === 'apply') {
+            await apply(tx, { ...change, payload: resolution.payload }, current + 1);
+            await this.recordChange(tx, install.tenantId, change, current + 1, install.id);
+            result.applied++;
+            result.reconciled.push({
+              entity: change.entity,
+              entityId: change.entityId,
+              outcome: 'resolved by policy',
+            });
+          } else if (resolution.action === 'reject') {
+            // Not silently dropped: the authoritative record goes back so the
+            // client can converge instead of resending a losing change forever.
+            result.rejected.push({
+              entity: change.entity,
+              entityId: change.entityId,
+              remote: resolution.remote,
+            });
+          } else {
+            const [conflict] = await tx
+              .insert(syncConflicts)
+              .values({
+                tenantId: install.tenantId,
+                installId: install.id,
+                entity: change.entity,
+                entityId: change.entityId,
+                localPayload: change.payload ?? {},
+                remotePayload: remote,
+                baseVersion: change.baseVersion,
+                remoteVersion: current,
+              })
+              .returning({ id: syncConflicts.id });
+
+            result.escalated.push({
+              conflictId: conflict!.id,
+              entity: change.entity,
+              entityId: change.entityId,
+              reason: resolution.reason,
+            });
+          }
+          continue;
+        }
+
+        result.skipped++;
+      }
+    });
+
+    await this.database
+      .requireAdminDb()
+      .update(syncInstalls)
+      .set({ lastPushAt: new Date() })
+      .where(eq(syncInstalls.id, install.id));
+
+    this.log.log(
+      `install ${install.label}: ${result.applied} applied, ${result.reconciled.length} reconciled, ` +
+        `${result.rejected.length} rejected, ${result.escalated.length} escalated`,
+    );
+    return result;
+  }
+
+  // ── conflicts ───────────────────────────────────────────────────────────────
+
+  /** Conflicts awaiting a decision. Surface these; do not let them accumulate. */
+  async openConflicts(tenantId: string, limit = 100) {
+    return this.database
+      .requireAdminDb()
+      .select()
+      .from(syncConflicts)
+      .where(and(eq(syncConflicts.tenantId, tenantId), isNull(syncConflicts.resolvedAt)))
+      .orderBy(asc(syncConflicts.detectedAt))
+      .limit(limit);
+  }
+
+  /**
+   * Resolve a conflict a person has decided.
+   *
+   * Choosing `local` applies the install's version as a NEW change, which then
+   * propagates to every other install — the decision converges the whole estate
+   * rather than only the two parties that disagreed.
+   */
+  async resolveConflict(
+    tenantId: string,
+    conflictId: string,
+    choice: 'local' | 'remote' | 'merged',
+    resolvedBy: string,
+    mergedPayload?: Record<string, unknown>,
+    apply?: (tx: TenantTx, entity: string, entityId: string, payload: Record<string, unknown>, version: number) => Promise<void>,
+  ): Promise<void> {
+    const db = this.database.requireAdminDb();
+    const [conflict] = await db
+      .select()
+      .from(syncConflicts)
+      .where(and(eq(syncConflicts.id, conflictId), eq(syncConflicts.tenantId, tenantId)))
+      .limit(1);
+
+    if (!conflict) throw new Error('conflict not found');
+    if (conflict.resolvedAt) throw new Error('that conflict is already resolved');
+
+    if (choice !== 'remote' && apply) {
+      const payload = choice === 'merged' ? (mergedPayload ?? {}) : conflict.localPayload;
+      const next = (await this.currentVersion(tenantId, conflict.entity, conflict.entityId)) + 1;
+      await this.database.runInTenantContext(tenantId, async (tx) => {
+        await apply(tx, conflict.entity, conflict.entityId, payload, next);
+        await this.recordChange(
+          tx,
+          tenantId,
+          { entity: conflict.entity, entityId: conflict.entityId, operation: 'upsert', payload },
+          next,
+          null,
+        );
+      });
+    }
+
+    await db
+      .update(syncConflicts)
+      .set({ resolvedAt: new Date(), resolution: choice, resolvedBy })
+      .where(eq(syncConflicts.id, conflictId));
+  }
+
+  /**
+   * Presigned URLs for file transfer.
+   *
+   * Bytes never pass through this API in either direction: an on-premise install
+   * uploading a year of scanned documents through the request pipeline would
+   * occupy a connection for hours and gain nothing.
+   */
+  async presignUpload(install: typeof syncInstalls.$inferSelect, filename: string, contentType: string) {
+    const key = `tenants/${install.tenantId}/sync/${install.id}/${Date.now()}-${sanitise(filename)}`;
+    return { key, url: await this.storage.presignUpload(key, contentType) };
+  }
+
+  async presignDownload(install: typeof syncInstalls.$inferSelect, key: string) {
+    // The key must belong to this install's tenant. Without this check a valid
+    // sync key becomes a read primitive for every tenant's files.
+    if (!key.startsWith(`tenants/${install.tenantId}/`)) {
+      throw new Error('that file does not belong to this install');
+    }
+    return { key, url: this.storage.publicUrl(key) };
+  }
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+/** Path traversal and separators out; the key is a storage path. */
+function sanitise(filename: string): string {
+  return filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 128);
+}

@@ -1,0 +1,35 @@
+import { TemporalClient } from '../application/temporal.client';
+import { EMAIL_VERIFIED_SIGNAL, TENANT_ONBOARDING } from './workflow-signals';
+
+describe('workflow ids', () => {
+  it('derives an id from the tenant rather than generating one', () => {
+    // The id IS the idempotency key. Kafka WILL deliver the same event twice;
+    // a generated id would start a second onboarding — two welcome emails and
+    // two seven-day timers for one tenant.
+    const a = TemporalClient.workflowId('11111111-1111-1111-1111-111111111111', 'onboarding', 'x');
+    const b = TemporalClient.workflowId('11111111-1111-1111-1111-111111111111', 'onboarding', 'x');
+    expect(a).toBe(b);
+  });
+
+  it('keeps two tenants apart in a shared namespace', () => {
+    // One namespace with the tenant in the id, not a namespace per tenant:
+    // namespaces are operator-managed objects, and one per customer is how
+    // people find that out.
+    const a = TemporalClient.workflowId('aaaaaaaa-0000-0000-0000-000000000000', 'onboarding', 'k');
+    const b = TemporalClient.workflowId('bbbbbbbb-0000-0000-0000-000000000000', 'onboarding', 'k');
+    expect(a).not.toBe(b);
+  });
+
+  it('has a home for platform-level workflows that belong to no tenant', () => {
+    expect(TemporalClient.workflowId(null, 'reconcile', 'nightly')).toBe('platform:reconcile:nightly');
+  });
+});
+
+describe('signal names', () => {
+  it('are plain strings, importable without the workflow sandbox', () => {
+    // Importing the workflow file to reach the signal would evaluate
+    // proxyActivities outside a workflow context, which fails obscurely.
+    expect(EMAIL_VERIFIED_SIGNAL).toBe('emailVerified');
+    expect(TENANT_ONBOARDING).toBe('tenantOnboarding');
+  });
+});

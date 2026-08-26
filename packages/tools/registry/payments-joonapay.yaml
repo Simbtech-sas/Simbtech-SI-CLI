@@ -1,0 +1,76 @@
+id: payments-joonapay
+kind: feature
+name: JoonaPay payments
+category: finance
+summary: Mobile Money, cards and Wave across West Africa — hosted checkout plus payouts
+repo: https://apis.joonapay.com
+license: UNLICENSED
+flavors: [sisaas]
+requires: [payments-core]
+
+env:
+  - key: JOONAPAY_BASE_URL
+    value: https://apis.joonapay.com/api/v1/developer
+  - key: JOONAPAY_CLIENT_KEY
+    comment: "pk_live_… or a test key. The PREFIX picks the environment; the URL never changes."
+  - key: JOONAPAY_PRIVATE_KEY
+    comment: Shown once at creation. Server-side only — never ships to a client.
+  - key: JOONAPAY_WEBHOOK_SECRET
+    comment: Verifies X-Webhook-Signature (sha256=hex) over the RAW request body
+  - key: JOONAPAY_COUNTRY_UUID
+    comment: Required on every payment. Get it from the dashboard for your country.
+  - key: JOONAPAY_CURRENCIES
+    value: XOF
+    comment: Comma-separated. Drives which requests route here when two providers are configured.
+  - key: JOONAPAY_WEBHOOK_URL
+    comment: "Must be https:// — an http:// URL turns the POST into a GET on redirect and stops delivering."
+  - key: JOONAPAY_DUE_DAYS
+    value: "7"
+    comment: How long a checkout link stays payable.
+
+migrations:
+  - src: migration.sql.hbs
+    name: joonapay_payments
+
+files:
+  - src: schema.ts.hbs
+    dest: src/database/schema/joonapay.ts
+  - src: joonapay.types.ts.hbs
+    dest: src/modules/joonapay/domain/joonapay.types.ts
+  - src: signatures.ts.hbs
+    dest: src/modules/joonapay/domain/signatures.ts
+  - src: joonapay.client.ts.hbs
+    dest: src/modules/joonapay/domain/joonapay.client.ts
+  - src: joonapay.spec.ts.hbs
+    dest: src/modules/joonapay/domain/joonapay.spec.ts
+  - src: joonapay.provider.ts.hbs
+    dest: src/modules/joonapay/application/joonapay.provider.ts
+  - src: joonapay-payments.repository.ts.hbs
+    dest: src/modules/joonapay/infrastructure/joonapay-payments.repository.ts
+  - src: joonapay.controller.ts.hbs
+    dest: src/modules/joonapay/interface/joonapay.controller.ts
+  - src: joonapay.module.ts.hbs
+    dest: src/modules/joonapay/joonapay.module.ts
+
+register:
+  - anchor: schema
+    snippet: "export * from './joonapay';"
+  - anchor: modules
+    snippet: JoonapayModule,
+    import: "import { JoonapayModule } from './modules/joonapay/joonapay.module';"
+  # The WORKER too. Billing renewals and payment reconciliation run there, and a
+  # @Global module still has to be imported into the graph it is global to — the
+  # worker is a separate Nest application, not the API with extra providers.
+  - anchor: workerModules
+    snippet: JoonapayModule,
+    import: "import { JoonapayModule } from './modules/joonapay/joonapay.module';"
+
+notes:
+  - "JoonaPay collects through a HOSTED page — there is no USSD push and no auto-charge. `capabilities` says so out loud, because a subscription engine that assumes silent renewal marks every renewal failed within seconds."
+  - "The envelope decides, not the HTTP status: `success: false` can arrive with a 200."
+  - "TWO status vocabularies for the same payment — `completed` over REST, `SUCCESS` over the webhook. Both normalise to the port's `settled` before anything is stored."
+  - "`expired` maps to cancelled, not failed. No money moved and nothing went wrong; the customer simply never paid."
+  - "The success_url query string is UNSIGNED. It routes the user; it never settles an order. Confirm via GET /payments/:uuid — the webhook is authoritative."
+  - "Retry a payout with the SAME Idempotency-Key. A new key on a retry creates a second payout; a 409 is a guard, not a failure."
+  - "60 requests per minute, and IP whitelisting: a 403 almost always means the egress IP is not registered, not that the keys are wrong."
+  - "No refund endpoint exists. A payout is not a refund — different balance, no link to the original payment — so refund() throws rather than pretending."

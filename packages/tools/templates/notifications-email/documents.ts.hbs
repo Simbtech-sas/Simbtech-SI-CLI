@@ -1,0 +1,199 @@
+/**
+ * Invoices and receipts, as HTML documents.
+ *
+ * No invoice library. The ones on npm are either unmaintained (`pdf-invoice`:
+ * last published 2022), hosted services wearing a package (`easyinvoice`), or a
+ * whole template designer to learn (`pdfme`) — and all of them fix the layout
+ * that accountants and tax rules keep changing. An invoice is a table; the hard
+ * parts are the numbers and the legal fields, which no library knows for your
+ * jurisdiction anyway.
+ *
+ * These render HTML. `PdfService` turns that into a PDF through Gotenberg, which
+ * is already in the registry (`si add gotenberg`) and is the same renderer
+ * Chrome uses to print.
+ */
+
+/**
+ * Currencies with no minor unit. Displaying "5 000,00 FCFA" is wrong in the way
+ * that makes a customer email support.
+ *
+ * ponytail: a local copy rather than a dependency on the payments module —
+ * notifications formats for READING, payments formats for SETTLEMENT, and the
+ * two must not be able to break each other. Fifteen codes is not a library.
+ */
+const ZERO_DECIMAL = new Set(['XOF', 'XAF', 'GNF', 'KMF', 'DJF', 'RWF', 'UGX', 'VUV', 'CLP', 'JPY', 'KRW']);
+
+export function formatMoney(amount: string | number, currency: string, locale = 'fr-FR'): string {
+  const value = typeof amount === 'string' ? Number(amount) : amount;
+  if (!Number.isFinite(value)) return `${amount} ${currency}`;
+  const digits = ZERO_DECIMAL.has(currency.toUpperCase()) ? 0 : 2;
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency,
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
+export interface DocumentLine {
+  description: string;
+  /** Omit for a single-line charge; `1` renders the same but says less. */
+  quantity?: number;
+  /** Decimal string, in major units. */
+  unitAmount: string;
+}
+
+export interface DocumentParty {
+  name: string;
+  address?: string[];
+  /** VAT / tax id, printed when present. Required in most of the EU. */
+  taxId?: string;
+  email?: string;
+}
+
+export interface InvoiceDocument {
+  kind: 'invoice' | 'receipt';
+  number: string;
+  issuedAt: Date;
+  /** Invoices only. A receipt is already paid. */
+  dueAt?: Date;
+  currency: string;
+  from: DocumentParty;
+  to: DocumentParty;
+  lines: DocumentLine[];
+  /** Percentage, e.g. 19.25 for Cameroon's TVA. Omitted means none is charged. */
+  taxRate?: number;
+  /** Receipts only. */
+  paidAt?: Date;
+  paymentReference?: string;
+  paymentMethod?: string;
+  notes?: string;
+}
+
+export interface DocumentTotals {
+  subtotal: string;
+  tax: string;
+  total: string;
+}
+
+/**
+ * Totals, computed in integer minor units.
+ *
+ * Floats do not add money up correctly — 0.1 + 0.2 is the canonical example, and
+ * an invoice that is one centime off is an invoice a customer disputes. Every
+ * multiplication and sum here happens on integers; the division to major units
+ * happens once, at the end.
+ */
+export function totalsFor(doc: Pick<InvoiceDocument, 'lines' | 'taxRate' | 'currency'>): DocumentTotals {
+  const scale = ZERO_DECIMAL.has(doc.currency.toUpperCase()) ? 1 : 100;
+  const toMinor = (value: string): number => Math.round(Number(value) * scale);
+
+  const subtotalMinor = doc.lines.reduce(
+    (sum, line) => sum + toMinor(line.unitAmount) * (line.quantity ?? 1),
+    0,
+  );
+  const taxMinor = doc.taxRate ? Math.round((subtotalMinor * doc.taxRate) / 100) : 0;
+  const toMajor = (minor: number): string => (scale === 1 ? String(minor) : (minor / 100).toFixed(2));
+
+  return {
+    subtotal: toMajor(subtotalMinor),
+    tax: toMajor(taxMinor),
+    total: toMajor(subtotalMinor + taxMinor),
+  };
+}
+
+function esc(value: string | null | undefined): string {
+  return (value ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] ?? c,
+  );
+}
+
+const date = (value: Date): string => value.toISOString().slice(0, 10);
+
+function party(p: DocumentParty): string {
+  return [
+    `<strong>${esc(p.name)}</strong>`,
+    ...(p.address ?? []).map(esc),
+    p.taxId ? `Tax ID: ${esc(p.taxId)}` : '',
+    p.email ? esc(p.email) : '',
+  ]
+    .filter(Boolean)
+    .join('<br>');
+}
+
+/**
+ * A4 print CSS, inlined. Gotenberg renders the page with headless Chromium and
+ * nothing external loads — an external stylesheet on a locked-down network is a
+ * document that silently prints unstyled.
+ */
+export function renderDocument(doc: InvoiceDocument): string {
+  const totals = totalsFor(doc);
+  const money = (v: string): string => formatMoney(v, doc.currency);
+  const title = doc.kind === 'invoice' ? 'Invoice' : 'Receipt';
+
+  const rows = doc.lines
+    .map((line) => {
+      const qty = line.quantity ?? 1;
+      const lineTotal = totalsFor({ lines: [line], currency: doc.currency }).subtotal;
+      return `<tr>
+        <td>${esc(line.description)}</td>
+        <td class="n">${qty}</td>
+        <td class="n">${money(line.unitAmount)}</td>
+        <td class="n">${money(lineTotal)}</td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<!doctype html><html><head><meta charset="utf-8"><title>${title} ${esc(doc.number)}</title>
+<style>
+  @page { size: A4; margin: 18mm; }
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #171717; font-size: 11pt; line-height: 1.5; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 2rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+  .meta { text-align: right; color: #525252; font-size: .9em; }
+  .parties { display: flex; gap: 3rem; margin-bottom: 2rem; }
+  .parties > div { flex: 1; }
+  .label { text-transform: uppercase; letter-spacing: .05em; font-size: .75em; color: #737373; margin-bottom: .35rem; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: .55rem .4rem; border-bottom: 1px solid #e5e5e5; text-align: left; }
+  th { font-size: .75em; text-transform: uppercase; letter-spacing: .05em; color: #737373; }
+  .n { text-align: right; font-variant-numeric: tabular-nums; }
+  tfoot td { border: 0; }
+  tfoot .total td { border-top: 2px solid #171717; font-weight: 600; font-size: 1.1em; }
+  .paid { display: inline-block; border: 2px solid #16a34a; color: #16a34a; padding: .3rem .75rem; border-radius: .35rem; font-weight: 600; letter-spacing: .08em; }
+  footer { margin-top: 2.5rem; color: #737373; font-size: .85em; }
+</style></head><body>
+<header>
+  <div>
+    <h1>${title}</h1>
+    ${doc.kind === 'receipt' ? '<span class="paid">PAID</span>' : ''}
+  </div>
+  <div class="meta">
+    <div><strong>${esc(doc.number)}</strong></div>
+    <div>Issued ${date(doc.issuedAt)}</div>
+    ${doc.dueAt ? `<div>Due ${date(doc.dueAt)}</div>` : ''}
+    ${doc.paidAt ? `<div>Paid ${date(doc.paidAt)}</div>` : ''}
+  </div>
+</header>
+
+<div class="parties">
+  <div><div class="label">From</div>${party(doc.from)}</div>
+  <div><div class="label">Billed to</div>${party(doc.to)}</div>
+</div>
+
+<table>
+  <thead><tr><th>Description</th><th class="n">Qty</th><th class="n">Unit</th><th class="n">Amount</th></tr></thead>
+  <tbody>${rows}</tbody>
+  <tfoot>
+    <tr><td colspan="3" class="n">Subtotal</td><td class="n">${money(totals.subtotal)}</td></tr>
+    ${doc.taxRate ? `<tr><td colspan="3" class="n">Tax (${doc.taxRate}%)</td><td class="n">${money(totals.tax)}</td></tr>` : ''}
+    <tr class="total"><td colspan="3" class="n">Total</td><td class="n">${money(totals.total)}</td></tr>
+  </tfoot>
+</table>
+
+<footer>
+  ${doc.paymentReference ? `<div>Payment reference: ${esc(doc.paymentReference)}${doc.paymentMethod ? ` (${esc(doc.paymentMethod)})` : ''}</div>` : ''}
+  ${doc.notes ? `<div>${esc(doc.notes)}</div>` : ''}
+</footer>
+</body></html>`;
+}

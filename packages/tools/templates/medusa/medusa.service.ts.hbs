@@ -1,0 +1,60 @@
+import { Injectable } from '@nestjs/common';
+import Medusa from '@medusajs/js-sdk';
+
+/**
+ * Medusa commerce client.
+ *
+ * Two boundary rules this class exists to hold:
+ *
+ * 1. **Medusa has no tenancy.** Isolation is a sales channel per tenant, applied
+ *    here rather than by callers — a caller that could choose the channel could
+ *    read another tenant's catalogue.
+ * 2. **Medusa money is an integer in minor units** (1999 = 19.99). The rest of
+ *    this codebase uses decimal strings, so conversion happens at this edge and
+ *    never passes through a float.
+ */
+@Injectable()
+export class MedusaService {
+  private readonly client = new Medusa({
+    baseUrl: process.env['MEDUSA_BACKEND_URL'] ?? 'http://localhost:9000',
+    publishableKey: process.env['MEDUSA_PUBLISHABLE_KEY'],
+    apiKey: process.env['MEDUSA_API_TOKEN'],
+  });
+
+  /** Minor units -> decimal string, e.g. 1999 -> "19.99". Integer maths only. */
+  static toDecimal(minorUnits: number, exponent = 2): string {
+    const sign = minorUnits < 0 ? '-' : '';
+    const digits = String(Math.abs(Math.trunc(minorUnits))).padStart(exponent + 1, '0');
+    const whole = digits.slice(0, digits.length - exponent);
+    return exponent === 0 ? `${sign}${whole}` : `${sign}${whole}.${digits.slice(-exponent)}`;
+  }
+
+  /** Decimal string -> minor units, e.g. "19.99" -> 1999. Never uses parseFloat. */
+  static toMinorUnits(decimal: string, exponent = 2): number {
+    const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(decimal.trim());
+    if (!match) throw new Error(`not a decimal amount: ${decimal}`);
+    const [, sign, whole, fraction = ''] = match;
+    const padded = (fraction + '0'.repeat(exponent)).slice(0, exponent);
+    return Number(`${sign}${whole}${padded}`);
+  }
+
+  listProducts(salesChannelId: string, limit = 20) {
+    return this.client.store.product.list({ sales_channel_id: [salesChannelId], limit });
+  }
+
+  getProduct(id: string, salesChannelId: string) {
+    return this.client.store.product.retrieve(id, { sales_channel_id: [salesChannelId] });
+  }
+
+  createCart(salesChannelId: string, regionId: string) {
+    return this.client.store.cart.create({ sales_channel_id: salesChannelId, region_id: regionId });
+  }
+
+  addLineItem(cartId: string, variantId: string, quantity: number) {
+    return this.client.store.cart.createLineItem(cartId, { variant_id: variantId, quantity });
+  }
+
+  completeCart(cartId: string) {
+    return this.client.store.cart.complete(cartId);
+  }
+}

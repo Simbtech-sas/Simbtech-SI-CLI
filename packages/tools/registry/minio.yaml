@@ -1,0 +1,17 @@
+id: minio
+name: MinIO
+category: storage
+summary: S3-compatible object storage (already in the SiSAAS dev stack)
+repo: https://github.com/minio/minio
+license: AGPL-3.0
+flavors: [sisaas, platform]
+
+deps:
+  server:
+    - "@aws-sdk/client-s3"
+    - "@aws-sdk/s3-request-presigner"
+
+notes:
+  - SiSAAS already ships MinIO and an S3 storage adapter — you probably do not need this entry.
+  - "AGPL: fine to self-host and use over its API; read the licence before redistributing MinIO itself."
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `minio` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

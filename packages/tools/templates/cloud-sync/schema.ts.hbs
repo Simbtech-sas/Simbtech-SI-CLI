@@ -1,0 +1,105 @@
+import {
+  bigint,
+  bigserial,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  time,
+  timestamp,
+  uuid,
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { tenants } from './tenants';
+
+/** One on-premise install. Two sites for one customer are two rows, two keys. */
+export const syncInstalls = pgTable(
+  'sync_installs',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    label: text('label').notNull(),
+    keyHash: text('key_hash').notNull().unique(),
+    cursor: bigint('cursor', { mode: 'number' }).notNull().default(0),
+
+    // ── Schedule, per install ────────────────────────────────────────────────
+    /** Null means manual only — the install syncs when a person asks it to. */
+    intervalSeconds: integer('interval_seconds'),
+    /**
+     * Optional window in the install's own timezone. A site on a metered link
+     * syncs at night; one on fibre syncs all day. Both are correct, which is why
+     * it is a setting rather than a constant.
+     */
+    windowStart: time('window_start'),
+    windowEnd: time('window_end'),
+    timezone: text('timezone').notNull().default('UTC'),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    lastPushAt: timestamp('last_push_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('sync_installs_tenant_idx').on(t.tenantId)],
+);
+
+/**
+ * Every syncable change, in one ordered stream.
+ *
+ * A log rather than a per-table `updated_at` scan: a timestamp scan cannot see
+ * deletes at all, and gives no stable cursor across several tables.
+ */
+export const syncChanges = pgTable(
+  'sync_changes',
+  {
+    seq: bigserial('seq', { mode: 'number' }).primaryKey(),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    entity: text('entity').notNull(),
+    entityId: text('entity_id').notNull(),
+    operation: text('operation').$type<'upsert' | 'delete'>().notNull(),
+    payload: jsonb('payload').$type<Record<string, unknown>>(),
+    /** The record's version AFTER this change. The basis of the conflict check. */
+    version: integer('version').notNull().default(1),
+    /** Set so a change is never echoed back to the install that made it. */
+    originInstallId: uuid('origin_install_id').references(() => syncInstalls.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('sync_changes_cursor_idx').on(t.tenantId, t.seq)],
+);
+
+/**
+ * Conflicts a policy declined to resolve on its own.
+ *
+ * This table is what separates reconciliation from silent data loss. When two
+ * sites edited the same record offline, something must be discarded — and for
+ * anything a person cares about, that decision belongs to a person.
+ */
+export const syncConflicts = pgTable(
+  'sync_conflicts',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+    installId: uuid('install_id')
+      .notNull()
+      .references(() => syncInstalls.id, { onDelete: 'cascade' }),
+    entity: text('entity').notNull(),
+    entityId: text('entity_id').notNull(),
+    /** Both sides kept whole — a conflict you can only half-read is one you cannot act on. */
+    localPayload: jsonb('local_payload').$type<Record<string, unknown>>().notNull(),
+    remotePayload: jsonb('remote_payload').$type<Record<string, unknown>>().notNull(),
+    baseVersion: integer('base_version').notNull(),
+    remoteVersion: integer('remote_version').notNull(),
+    detectedAt: timestamp('detected_at', { withTimezone: true }).notNull().defaultNow(),
+    resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+    resolution: text('resolution').$type<'local' | 'remote' | 'merged'>(),
+    resolvedBy: uuid('resolved_by'),
+  },
+  (t) => [index('sync_conflicts_open_idx').on(t.tenantId, t.detectedAt)],
+);

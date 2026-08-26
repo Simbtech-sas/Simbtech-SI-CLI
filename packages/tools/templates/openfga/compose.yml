@@ -1,0 +1,10 @@
+services:
+  openfga:
+    image: openfga/openfga:v1.11.1
+    restart: unless-stopped
+    command: run
+    environment:
+      OPENFGA_DATASTORE_ENGINE: memory
+      OPENFGA_HTTP_ADDR: '0.0.0.0:8081'
+    ports:
+      - '8081:8081'

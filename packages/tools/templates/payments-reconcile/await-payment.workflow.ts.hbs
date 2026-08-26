@@ -1,0 +1,77 @@
+import { condition, proxyActivities, defineSignal, setHandler, workflowInfo } from '@temporalio/workflow';
+import type { PaymentActivities, PaymentRef } from '../application/payment-activities';
+import { GIVE_UP_AFTER, PAYMENT_RESOLVED_SIGNAL, POLL_SCHEDULE } from '../domain/payment-signals';
+
+/**
+ * Wait for a payment to resolve, and go and ask if nobody tells us.
+ *
+ * This closes a hole that neither Kafka nor a cron closes well. A Mobile Money
+ * payment settles when the provider POSTs a webhook — a best-effort HTTP call
+ * from someone else's network, over a link that is sometimes not there. When one
+ * is lost the money still moved, and without this the payment sits `pending`
+ * forever: the invoice stays unpaid, dunning runs, and a customer who paid gets
+ * suspended.
+ *
+ * A cron could poll instead, and would have to scan every pending payment on
+ * every tick and keep its own idea of how many times it had asked. Here the
+ * waiting IS the code, per payment, with the backoff written down once.
+ *
+ * The happy path costs nothing: the webhook signals this workflow within
+ * seconds and it exits before the first poll is due.
+ */
+export const paymentResolved = defineSignal<[state: 'settled' | 'failed' | 'cancelled']>(
+  PAYMENT_RESOLVED_SIGNAL,
+);
+
+const activities = proxyActivities<PaymentActivities>({
+  startToCloseTimeout: '30 seconds',
+  retry: {
+    // A provider outage is exactly when this matters most, so retry patiently.
+    maximumAttempts: 6,
+    initialInterval: '5 seconds',
+    maximumInterval: '2 minutes',
+  },
+});
+
+export type PaymentOutcome = 'settled' | 'failed' | 'cancelled' | 'abandoned';
+
+export async function awaitPayment(payment: PaymentRef): Promise<PaymentOutcome> {
+  const startedAt = workflowInfo().startTime.getTime();
+  let resolved: 'settled' | 'failed' | 'cancelled' | null = null;
+
+  // The webhook path signals here. It is the fast, normal case; polling is the
+  // fallback, not the mechanism.
+  setHandler(paymentResolved, (state) => {
+    resolved = state;
+  });
+
+  const elapsed = (): number => Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+
+  for (const interval of POLL_SCHEDULE) {
+    // Sleeps until either the signal lands or the interval passes — a durable
+    // timer, so a deploy in the middle changes nothing.
+    if (await condition(() => resolved !== null, interval)) return resolved!;
+
+    const state = await activities.pollPaymentStatus(payment);
+    if (state === 'settled' || state === 'failed' || state === 'cancelled') {
+      // Ignore the return: false means the webhook won the race while we were
+      // asking, which is a good outcome, not a reason to keep polling.
+      await activities.applyPolledOutcome(payment, state, elapsed());
+      return state;
+    }
+  }
+
+  // One long wait for a customer who took their time, then stop.
+  if (await condition(() => resolved !== null, GIVE_UP_AFTER)) return resolved!;
+
+  const finalState = await activities.pollPaymentStatus(payment);
+  if (finalState === 'settled' || finalState === 'failed' || finalState === 'cancelled') {
+    await activities.applyPolledOutcome(payment, finalState, elapsed());
+    return finalState;
+  }
+
+  // Still pending after a day. Not an error — nobody paid, and the payment is
+  // left alone rather than guessed at, because marking it failed would be a
+  // claim the provider never made.
+  return 'abandoned';
+}

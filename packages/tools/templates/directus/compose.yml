@@ -1,0 +1,17 @@
+services:
+  directus:
+    image: directus/directus:11
+    restart: unless-stopped
+    environment:
+      KEY: ${DIRECTUS_KEY:-directus_dev_key}
+      SECRET: ${DIRECTUS_SECRET:-directus_dev_secret}
+      DB_CLIENT: pg
+      DB_HOST: postgres
+      DB_PORT: '5432'
+      DB_DATABASE: {{brand}}
+      DB_USER: {{brand}}
+      DB_PASSWORD: {{brand}}_dev_pwd
+      ADMIN_EMAIL: admin@{{brand}}.local
+      ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD:-admin}
+    ports:
+      - '8055:8055'

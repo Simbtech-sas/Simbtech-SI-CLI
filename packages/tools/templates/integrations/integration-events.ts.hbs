@@ -1,0 +1,47 @@
+import { z } from 'zod';
+import { defineEvent, type EventContract } from './contract.ts';
+
+/**
+ * Something an imported tool told us about.
+ *
+ * Every other contract in this package is fully typed, because we own both
+ * ends. This one is not, and that is deliberate rather than lazy: Medusa,
+ * Documenso, LiveKit and Keycloak own their payload shapes and change them on
+ * their own release schedule. A hand-written zod schema for someone else's JSON
+ * gives compile-time safety that does not exist — it breaks in production on
+ * their next minor version, having passed every test.
+ *
+ * So the envelope is typed and the body is not. A consumer narrows `data` with
+ * a schema IT owns:
+ *
+ *   registry.on(IntegrationEventReceived, 'fulfil', async ({ payload }) => {
+ *     if (payload.source !== 'medusa' || payload.event !== 'order.placed') return;
+ *     const order = OrderPlaced.parse(payload.data);   // your schema, your risk
+ *     ...
+ *   });
+ *
+ * That way a payload change breaks one handler with a clear validation error,
+ * instead of silently taking a different branch.
+ */
+const integrationPayload = z.object({
+  /** Which tool. Matches the `:source` path segment and a WEBHOOK_SOURCES entry. */
+  source: z.string().min(1),
+  /** The tool's own event name, verbatim. `order.placed`, `document.completed`… */
+  event: z.string().min(1),
+  /** The tool's delivery id, or a hash of the body when it sends none. */
+  deliveryId: z.string().min(1),
+  receivedAt: z.string().datetime({ offset: true }),
+  data: z.record(z.unknown()),
+});
+
+export const IntegrationEventReceived = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'integration',
+  type: 'IntegrationEventReceived',
+  version: 1,
+  schema: integrationPayload,
+});
+
+export const INTEGRATION_EVENTS = {
+  IntegrationEventReceived,
+} as const satisfies Record<string, EventContract>;

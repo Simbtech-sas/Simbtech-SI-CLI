@@ -1,0 +1,25 @@
+id: openreplay
+name: OpenReplay
+category: observability
+summary: Self-hosted session replay — see exactly what the user did before the bug
+repo: https://github.com/openreplay/openreplay
+license: ELv2
+
+flavors: [sisaas, sibile-capacitor, sibile-rn]
+
+deps:
+  web:
+    - "@openreplay/tracker"
+
+env:
+  - key: OPENREPLAY_PROJECT_KEY
+    comment: From the OpenReplay dashboard
+  - key: OPENREPLAY_INGEST_POINT
+    value: https://openreplay.example.com/ingest
+    comment: Your self-hosted ingest endpoint
+
+notes:
+  - "Session replay records what users type. Turn on input obfuscation and mask every field holding personal data BEFORE enabling it in production."
+  - "Never record an auth screen. A replay of a login form is a password in your logs."
+  - "Self-hosting is a multi-service Kubernetes install — use the upstream Helm chart, not this stack."
+  - "Elastic Licence 2.0: self-host freely, but you may not offer it as a managed service."

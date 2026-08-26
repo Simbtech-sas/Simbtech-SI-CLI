@@ -1,0 +1,45 @@
+id: payments-core
+kind: feature
+name: Payment provider port
+category: finance
+summary: One interface every payment provider implements, so the app never names one
+repo: https://github.com/SIMBTECH-SAS/boilerplates
+license: UNLICENSED
+flavors: [sisaas]
+
+files:
+  - src: payment-provider.port.ts.hbs
+    dest: src/modules/payments/domain/payment-provider.port.ts
+  - src: payment-provider.spec.ts.hbs
+    dest: src/modules/payments/domain/payment-provider.spec.ts
+  - src: payment-registry.ts.hbs
+    dest: src/modules/payments/application/payment-registry.ts
+  - src: payment-registry.spec.ts.hbs
+    dest: src/modules/payments/application/payment-registry.spec.ts
+  - src: payments.module.ts.hbs
+    dest: src/modules/payments/payments.module.ts
+  - src: payment-events.ts.hbs
+    dest: root:packages/events/src/payments.ts
+  - src: payment-publisher.ts.hbs
+    dest: src/modules/payments/application/payment-publisher.ts
+
+register:
+  - anchor: events
+    snippet: "...PAYMENT_EVENTS,"
+    import: "import { PAYMENT_EVENTS } from './payments.ts';\nexport * from './payments.ts';"
+  - anchor: modules
+    snippet: PaymentsModule,
+    import: "import { PaymentsModule } from './modules/payments/payments.module';"
+  # The WORKER too. Billing renewals and payment reconciliation run there, and a
+  # @Global module still has to be imported into the graph it is global to — the
+  # worker is a separate Nest application, not the API with extra providers.
+  - anchor: workerModules
+    snippet: PaymentsModule,
+    import: "import { PaymentsModule } from './modules/payments/payments.module';"
+
+notes:
+  - "Everything above this port — subscriptions, orders, refunds — is provider-agnostic. Adding or swapping a provider changes which adapter is bound, and nothing else."
+  - "`capabilities` is deliberately NOT hidden. Providers differ in ways that change application behaviour: an engine that assumes silent charging marks every Mobile Money renewal failed within seconds."
+  - "Payments announce themselves through the outbox: PaymentSettled / PaymentFailed / PaymentCancelled, provider-agnostic. A consumer that switches on `provider` has the wrong thing in the wrong place."
+  - "The event is written in the SAME transaction as the status change. A redelivered webhook moves no row, so it publishes nothing — the database and every consumer stay idempotent together."
+  - "With several providers configured, `selectProvider` routes by currency and method — and REFUSES rather than guessing when none can settle the request."

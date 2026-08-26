@@ -1,0 +1,20 @@
+id: gotenberg
+name: Gotenberg
+category: docs
+summary: HTML/Markdown/Office to PDF over HTTP, headless Chromium and LibreOffice
+repo: https://github.com/gotenberg/gotenberg
+license: MIT
+flavors: [sisaas, platform]
+
+env:
+  - key: GOTENBERG_URL
+    value: "http://localhost:3010"
+
+compose: compose.yml
+
+deploy:
+  image: gotenberg/gotenberg:8
+  port: 3000
+
+notes:
+  - "Never expose this publicly: it renders arbitrary URLs, which makes an open instance an SSRF gadget."

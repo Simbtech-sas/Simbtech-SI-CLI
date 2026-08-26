@@ -1,0 +1,62 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { AppConfigService } from '../../../config/app-config.service';
+import { renderDocument, type InvoiceDocument } from '../domain/documents';
+
+export interface RenderedDocument {
+  filename: string;
+  content: Buffer;
+  contentType: 'application/pdf' | 'text/html';
+}
+
+/**
+ * HTML to PDF, through Gotenberg.
+ *
+ * Gotenberg rather than a bundled Chromium: `si add gotenberg` puts it in the
+ * compose file and the cluster, one container shared by every service that
+ * prints, instead of a 300MB browser inside each API image.
+ *
+ * When it is not configured the document is attached as HTML rather than
+ * skipped. A customer with an HTML invoice is inconvenienced; a customer with no
+ * invoice has to email support, and the finance team has a gap in its records.
+ */
+@Injectable()
+export class PdfService {
+  private readonly log = new Logger(PdfService.name);
+
+  constructor(private readonly config: AppConfigService) {}
+
+  async render(doc: InvoiceDocument): Promise<RenderedDocument> {
+    const html = renderDocument(doc);
+    const filename = `${doc.kind}-${doc.number}`;
+    const url = this.config.gotenbergUrl;
+
+    if (!url) {
+      this.log.warn(`GOTENBERG_URL is not set — attaching ${filename} as HTML`);
+      return { filename: `${filename}.html`, content: Buffer.from(html, 'utf8'), contentType: 'text/html' };
+    }
+
+    try {
+      const form = new FormData();
+      // Gotenberg requires the entry point to be named exactly index.html.
+      form.append('files', new Blob([html], { type: 'text/html' }), 'index.html');
+      form.append('printBackground', 'true');
+
+      const res = await fetch(`${url.replace(/\/+$/, '')}/forms/chromium/convert/html`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) throw new Error(`Gotenberg returned ${res.status}`);
+
+      return {
+        filename: `${filename}.pdf`,
+        content: Buffer.from(await res.arrayBuffer()),
+        contentType: 'application/pdf',
+      };
+    } catch (error) {
+      // Degrade, do not drop. The email still goes out with the document on it.
+      this.log.error(`PDF rendering failed (${(error as Error).message}) — attaching HTML instead`);
+      return { filename: `${filename}.html`, content: Buffer.from(html, 'utf8'), contentType: 'text/html' };
+    }
+  }
+}

@@ -1,0 +1,54 @@
+id: notifications-email
+kind: feature
+name: Email notifications
+category: notifications
+summary: Transactional email with typed templates, queued through BullMQ
+repo: https://github.com/resend/react-email
+license: MIT
+flavors: [sisaas]
+
+deps:
+  server:
+    - nodemailer
+  dev:
+    - "@types/nodemailer"
+
+env:
+  - key: SMTP_HOST
+    value: localhost
+    comment: Mailpit in dev; your provider in production
+  - key: SMTP_PORT
+    value: "1025"
+  - key: SMTP_FROM
+    value: no-reply@{{brand}}.local
+  - key: SMTP_FROM_NAME
+    value: "{{brand}}"
+
+files:
+  - src: mailer.service.ts.hbs
+    dest: src/modules/notifications/application/mailer.service.ts
+  - src: documents.ts.hbs
+    dest: src/modules/notifications/domain/documents.ts
+  - src: documents.spec.ts.hbs
+    dest: src/modules/notifications/domain/documents.spec.ts
+  - src: pdf.service.ts.hbs
+    dest: src/modules/notifications/application/pdf.service.ts
+  - src: templates.ts.hbs
+    dest: src/modules/notifications/domain/templates.ts
+  - src: email.processor.ts.hbs
+    dest: src/modules/notifications/application/email.processor.ts
+  - src: notifications.module.ts.hbs
+    dest: src/modules/notifications/notifications.module.ts
+
+register:
+  - anchor: modules
+    snippet: NotificationsModule,
+    import: "import { NotificationsModule } from './modules/notifications/notifications.module';"
+  - anchor: workerModules
+    snippet: NotificationsModule,
+    import: "import { NotificationsModule } from './modules/notifications/notifications.module';"
+
+notes:
+  - "Sending is QUEUED, never inline. An SMTP timeout inside a request turns a successful signup into a 500."
+  - "The dev stack already runs Mailpit on :8025 — nothing leaves your machine."
+  - "Set SPF, DKIM and DMARC before sending from a real domain, or you are building a spam folder."

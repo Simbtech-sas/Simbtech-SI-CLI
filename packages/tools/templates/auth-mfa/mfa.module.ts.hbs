@@ -1,0 +1,18 @@
+import { Module } from '@nestjs/common';
+import { MfaService } from './application/mfa.service';
+import { DevicesService } from './application/devices.service';
+import { MfaController } from './interface/mfa.controller';
+
+/**
+ * Second factor, recovery codes and device management.
+ *
+ * Registered alongside IamModule rather than inside it: MFA is about an
+ * existing session, and folding it into the module that issues sessions makes
+ * a circular dependency out of a straight line.
+ */
+@Module({
+  controllers: [MfaController],
+  providers: [MfaService, DevicesService],
+  exports: [MfaService, DevicesService],
+})
+export class MfaModule {}

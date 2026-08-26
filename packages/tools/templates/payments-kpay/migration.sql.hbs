@@ -1,0 +1,51 @@
+-- Our record of every KPay transaction.
+--
+-- KPay is the source of truth for a payment's STATUS; this table is the source
+-- of truth for what the payment was FOR. Without it there is no way to answer
+-- "which order does KPay reference KPAY-20260514-ABC123 belong to", and no way
+-- to make a webhook idempotent.
+CREATE TYPE "kpay_status" AS ENUM(
+  'PENDING', 'PROCESSING', 'COMPLETED', 'FAILED', 'CANCELLED', 'REFUNDED'
+);--> statement-breakpoint
+CREATE TYPE "kpay_kind" AS ENUM('payment', 'withdrawal', 'refund');--> statement-breakpoint
+
+CREATE TABLE "kpay_payments" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"kind" "kpay_kind" DEFAULT 'payment' NOT NULL,
+	-- KPay's own id. UNIQUE, and that is what makes webhook redelivery a no-op.
+	"kpay_payment_id" text NOT NULL UNIQUE,
+	"reference" text NOT NULL,
+	"provider_reference" text,
+	-- Our id, sent as KPay's idempotency key. Unique per tenant.
+	"external_id" text NOT NULL,
+	"status" "kpay_status" DEFAULT 'PENDING' NOT NULL,
+	-- Money as a DECIMAL, never a float. numeric(20,4) covers XAF integers and
+	-- the 2-decimal providers alike.
+	"amount" numeric(20, 4) NOT NULL,
+	"net_amount" numeric(20, 4),
+	"fee_amount" numeric(20, 4),
+	"currency" text NOT NULL,
+	"provider" text,
+	"country" text,
+	"phone_number" text,
+	"payment_method" text,
+	"mode" text,
+	-- true when settled with a kpay_test_ key. Test money must never be counted
+	-- as revenue, so it is recorded rather than inferred.
+	"is_test" boolean DEFAULT false NOT NULL,
+	"metadata" jsonb,
+	"failure_reason" text,
+	"completed_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	CONSTRAINT "kpay_tenant_external" UNIQUE ("tenant_id", "external_id")
+);--> statement-breakpoint
+CREATE INDEX "kpay_payments_tenant_idx" ON "kpay_payments" ("tenant_id", "created_at");--> statement-breakpoint
+CREATE INDEX "kpay_payments_reference_idx" ON "kpay_payments" ("reference");--> statement-breakpoint
+
+ALTER TABLE "kpay_payments" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "kpay_payments" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "kpay_payments"
+	USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
+	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);

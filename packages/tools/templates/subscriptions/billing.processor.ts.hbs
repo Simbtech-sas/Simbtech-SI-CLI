@@ -1,0 +1,178 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Cron, CronExpression } from '@nestjs/schedule';
+import { eq } from 'drizzle-orm';
+import { DatabaseService } from '../../../database/database.service';
+import { plans, subscriptions } from '../../../database/schema';
+import {
+  SubscriptionCancelled,
+  SubscriptionPaymentRequested,
+  SubscriptionSuspended,
+  TrialEnding,
+} from '@{{brand}}/events';
+import { OutboxService } from '../../events/application/outbox.service';
+import { SubscriptionsService } from './subscriptions.service';
+import { DUNNING_SCHEDULE, GRACE_DAYS, TRIAL_WARNING_DAYS, stepFor } from '../domain/dunning';
+import type { TenantTx } from '../../../database/database.service';
+
+/**
+ * The scheduled half of billing: ask for renewals, chase what is unpaid, warn
+ * before a trial ends, and suspend once the grace period is gone.
+ *
+ * Runs daily, not hourly. Every action here either costs money or sends a
+ * message to a customer, and both are things to do deliberately rather than
+ * twenty-four times a day.
+ */
+@Injectable()
+export class BillingProcessor {
+  private readonly log = new Logger(BillingProcessor.name);
+
+  constructor(
+    private readonly database: DatabaseService,
+    private readonly outbox: OutboxService,
+    private readonly subs: SubscriptionsService,
+  ) {}
+
+  @Cron(CronExpression.EVERY_DAY_AT_9AM)
+  async run(): Promise<void> {
+    const now = new Date();
+    const due = await this.subs.dueForBilling(now);
+    this.log.log(`billing run: ${due.length} subscription(s) to consider`);
+
+    for (const { subscription, plan, tenantName } of due) {
+      try {
+        await this.process(subscription, plan, tenantName, now);
+      } catch (err) {
+        // One tenant's failure must not stop the run for everyone else.
+        this.log.error(
+          `billing failed for tenant ${subscription.tenantId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+  }
+
+  private async process(
+    subscription: typeof subscriptions.$inferSelect,
+    plan: typeof plans.$inferSelect,
+    tenantName: string,
+    now: Date,
+  ): Promise<void> {
+    const base = {
+      subscriptionId: subscription.id,
+      planName: plan.name,
+      amount: plan.amount,
+      currency: plan.currency,
+      tenantName,
+      billingEmail: subscription.billingEmail,
+    };
+
+    // A trial ending soon gets a warning, not a charge. Someone who forgot they
+    // signed up should hear from us before money is asked for.
+    if (subscription.status === 'trialing' && subscription.trialEndsAt) {
+      const daysLeft = Math.ceil((subscription.trialEndsAt.getTime() - now.getTime()) / 86_400_000);
+      if (daysLeft <= TRIAL_WARNING_DAYS && daysLeft > 0) {
+        await this.announce(subscription.tenantId, async (tx) => {
+          await this.outbox.publish(tx, TrialEnding, {
+            aggregateId: subscription.id,
+            tenantId: subscription.tenantId,
+            payload: { ...base, daysLeft },
+          });
+        });
+        this.log.log(`trial for ${subscription.tenantId} ends in ${daysLeft} day(s)`);
+      }
+      return;
+    }
+
+    // A cancellation takes effect at the end of the paid period, not before —
+    // the customer paid for this time.
+    if (subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd <= now) {
+      await this.setStatus(subscription, 'cancelled', { cancelledAt: now }, async (tx) => {
+        await this.outbox.publish(tx, SubscriptionCancelled, {
+          aggregateId: subscription.id,
+          tenantId: subscription.tenantId,
+          payload: { ...base, endedAt: now.toISOString() },
+        });
+      });
+      this.log.log(`subscription ${subscription.id} cancelled at period end`);
+      return;
+    }
+
+    const overdueDays = Math.floor(
+      (now.getTime() - subscription.currentPeriodEnd.getTime()) / 86_400_000,
+    );
+
+    if (overdueDays < 0) return; // renewal is still ahead; requestPayment handles the lead time
+
+    const step = stepFor(overdueDays, 0);
+    if (!step) return;
+
+    if (step.action === 'suspend') {
+      // Access off, data kept. Deleting on non-payment turns a billing problem
+      // into a support catastrophe, and people do come back and pay.
+      await this.setStatus(subscription, 'suspended', {}, async (tx) => {
+        await this.outbox.publish(tx, SubscriptionSuspended, {
+          aggregateId: subscription.id,
+          tenantId: subscription.tenantId,
+          payload: base,
+        });
+      });
+      this.log.warn(`subscription ${subscription.id} suspended after ${GRACE_DAYS} days`);
+      return;
+    }
+
+    // `attempt` is derived from where we are in the schedule, not counted
+    // separately — a job that missed a run then sends "reminder 3", not
+    // "reminder 1" again.
+    const attempt = DUNNING_SCHEDULE.filter((s) => s.afterDays <= overdueDays).length;
+    const nextStatus = subscription.status === 'active' ? 'past_due' : null;
+
+    await this.announce(subscription.tenantId, async (tx) => {
+      if (nextStatus) {
+        await tx
+          .update(subscriptions)
+          .set({
+            status: nextStatus,
+            graceUntil: new Date(subscription.currentPeriodEnd.getTime() + GRACE_DAYS * 86_400_000),
+            updatedAt: new Date(),
+          })
+          .where(eq(subscriptions.id, subscription.id));
+      }
+      if (!step.notify) return;
+      await this.outbox.publish(tx, SubscriptionPaymentRequested, {
+        aggregateId: subscription.id,
+        tenantId: subscription.tenantId,
+        payload: {
+          ...base,
+          dueDate: subscription.currentPeriodEnd.toISOString().slice(0, 10),
+          attempt,
+          daysUntilSuspension: Math.max(0, GRACE_DAYS - overdueDays),
+        },
+      });
+    });
+  }
+
+  /** One transaction, so the event and whatever it describes commit together. */
+  private announce(tenantId: string, fn: (tx: TenantTx) => Promise<void>): Promise<void> {
+    return this.database.runInTenantContext(tenantId, fn);
+  }
+
+  /**
+   * Change status and announce it in ONE transaction.
+   *
+   * Suspending and then publishing separately means a crash in between cuts a
+   * customer off and tells nobody — including them.
+   */
+  private async setStatus(
+    subscription: typeof subscriptions.$inferSelect,
+    status: 'past_due' | 'suspended' | 'cancelled',
+    extra: Record<string, unknown>,
+    announce?: (tx: TenantTx) => Promise<void>,
+  ): Promise<void> {
+    await this.database.runInTenantContext(subscription.tenantId, async (tx) => {
+      await tx
+        .update(subscriptions)
+        .set({ status, updatedAt: new Date(), ...extra })
+        .where(eq(subscriptions.id, subscription.id));
+      if (announce) await announce(tx);
+    });
+  }
+}

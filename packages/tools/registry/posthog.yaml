@@ -1,0 +1,26 @@
+id: posthog
+name: PostHog
+category: observability
+summary: Product analytics, feature flags and session replay in one self-hosted app
+repo: https://github.com/PostHog/posthog
+license: MIT
+
+flavors: [sisaas, sibile-rn, sibile-capacitor]
+
+deps:
+  web:
+    - posthog-js
+  server:
+    - posthog-node
+
+env:
+  - key: POSTHOG_KEY
+    comment: Project API key
+  - key: POSTHOG_HOST
+    value: https://eu.posthog.com
+    comment: Your self-hosted instance, or a regional cloud endpoint
+
+notes:
+  - "An alternative to running Umami + Unleash + OpenReplay separately — analytics, flags and replay in one service."
+  - "Identify users by an opaque id, never by email: an analytics store is a lower-trust environment than your database."
+  - "Self-hosting needs ClickHouse, Kafka, Redis and Postgres. The hobby deploy is not production."

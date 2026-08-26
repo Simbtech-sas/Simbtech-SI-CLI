@@ -1,0 +1,148 @@
+import { Body, Controller, Get, Post, Query, Req, UseGuards, UseInterceptors } from '@nestjs/common';
+import { createZodDto } from 'nestjs-zod';
+import { z } from 'zod';
+import { Idempotent } from '../../security/interface/idempotent.decorator';
+import { IdempotencyInterceptor } from '../../security/interface/idempotency.interceptor';
+import { SyncKeyGuard, type RequestWithInstall } from './sync-key.guard';
+import { SyncService, type ChangeRecord } from '../application/sync.service';
+
+const changeSchema = z.object({
+  entity: z.string().min(1).max(64),
+  entityId: z.string().min(1).max(128),
+  operation: z.enum(['upsert', 'delete']),
+  payload: z.record(z.unknown()).nullish(),
+  // The version the install last saw. A mismatch is how a conflict is detected;
+  // without it the server cannot tell an edit from an overwrite.
+  baseVersion: z.number().int().min(0),
+  updatedAt: z.string().datetime(),
+});
+
+class PushDto extends createZodDto(
+  // Capped here as well as in the service: an unbounded array is a memory
+  // exhaustion vector before any handler code runs.
+  z.object({ changes: z.array(changeSchema).max(500) }),
+) {}
+
+class ResolveDto extends createZodDto(
+  z.object({
+    conflictId: z.string().uuid(),
+    choice: z.enum(['local', 'remote', 'merged']),
+    mergedPayload: z.record(z.unknown()).nullish(),
+  }),
+) {}
+
+class PresignDto extends createZodDto(
+  z.object({ filename: z.string().min(1).max(255), contentType: z.string().min(1).max(128) }),
+) {}
+
+/**
+ * The on-premise sync API.
+ *
+ * Authenticated by an install's sync key, never a user token — a machine
+ * credential with a different audience and a different revocation story.
+ *
+ * Nothing here reads a tenant id from the request: it comes from the install the
+ * key identifies. A machine that could name its own tenant could name someone
+ * else's.
+ */
+@Controller('sync')
+@UseGuards(SyncKeyGuard)
+export class SyncController {
+  constructor(private readonly sync: SyncService) {}
+
+  /**
+   * Confirms the key, reports the cursor, and hands back the SCHEDULE.
+   *
+   * The server owns the cadence deliberately: changing how often a site syncs
+   * must not require touching the machine, which may sit behind a customer's
+   * firewall and be reachable only by someone driving there.
+   *
+   * `serverTime` lets the install measure its own clock skew, which matters for
+   * any entity on a last-write-wins policy.
+   */
+  @Get('handshake')
+  handshake(@Req() req: RequestWithInstall) {
+    const install = req.install!;
+    return {
+      installId: install.id,
+      label: install.label,
+      cursor: install.cursor,
+      schedule: this.sync.schedule(install),
+      serverTime: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Changes after the cursor. Poll this; `more: true` means come straight back
+   * rather than waiting for the next interval.
+   */
+  @Get('pull')
+  pull(@Req() req: RequestWithInstall, @Query('since') since?: string) {
+    const from = since ? Number(since) : undefined;
+    return this.sync.pull(req.install!, Number.isFinite(from) ? from : undefined);
+  }
+
+  /**
+   * Apply a batch of local changes.
+   *
+   * Idempotency-Key is REQUIRED: a push that times out will be retried, and
+   * applying a batch of financial changes twice is exactly the failure this
+   * whole mechanism has to survive.
+   */
+  @Post('push')
+  @Idempotent({ required: true })
+  @UseInterceptors(IdempotencyInterceptor)
+  push(@Req() req: RequestWithInstall, @Body() dto: PushDto) {
+    return this.sync.push(
+      req.install!,
+      dto.changes as ChangeRecord[],
+      // Apply one change. Replace with your per-entity writes:
+      //   switch (change.entity) { case 'widgets': return upsertWidget(tx, change, version); }
+      async (_tx, change, version) => {
+        void change;
+        void version;
+      },
+      // Read the current record, so a conflict can show both sides. Returning
+      // null means the server has no record — which the version check treats as
+      // a create rather than a conflict.
+      async (_tx, entity, entityId) => {
+        void entity;
+        void entityId;
+        return null;
+      },
+    );
+  }
+
+  @Post('files/upload-url')
+  presignUpload(@Req() req: RequestWithInstall, @Body() dto: PresignDto) {
+    return this.sync.presignUpload(req.install!, dto.filename, dto.contentType);
+  }
+
+  @Get('files/download-url')
+  presignDownload(@Req() req: RequestWithInstall, @Query('key') key: string) {
+    return this.sync.presignDownload(req.install!, key);
+  }
+
+  /**
+   * Conflicts waiting on a person.
+   *
+   * Surface these in the UI. A queue nobody looks at is the same as discarding
+   * the data, only slower.
+   */
+  @Get('conflicts')
+  conflicts(@Req() req: RequestWithInstall) {
+    return this.sync.openConflicts(req.install!.tenantId);
+  }
+
+  /** Record a decision. It propagates to every install, not just the two that disagreed. */
+  @Post('conflicts/resolve')
+  resolve(@Req() req: RequestWithInstall, @Body() dto: ResolveDto) {
+    return this.sync.resolveConflict(
+      req.install!.tenantId,
+      dto.conflictId,
+      dto.choice,
+      req.install!.id,
+      dto.mergedPayload ?? undefined,
+    );
+  }
+}

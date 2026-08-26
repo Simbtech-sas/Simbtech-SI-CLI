@@ -1,0 +1,46 @@
+-- Second factors, recovery codes and known devices.
+--
+-- NOT tenant-scoped: a user authenticates before a tenant is known, and scoping
+-- these by tenant would make the second factor unreadable at exactly the moment
+-- it is needed.
+CREATE TABLE "mfa_enrolments" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" uuid NOT NULL UNIQUE REFERENCES "users"("id") ON DELETE CASCADE,
+	-- ENCRYPTED, never the base32 secret. A TOTP secret is a bearer credential:
+	-- a database dump must not be a set of working second factors.
+	"secret_encrypted" text NOT NULL,
+	-- Enrolment is incomplete until one code has been verified, so a user cannot
+	-- lock themselves out with a misconfigured authenticator.
+	"confirmed_at" timestamp with time zone,
+	-- The last accepted counter step. Without it a code works twice inside its
+	-- own 30-second window, which is all a shoulder-surfer needs.
+	"last_step" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+CREATE INDEX "mfa_enrolments_user_idx" ON "mfa_enrolments" ("user_id");--> statement-breakpoint
+
+CREATE TABLE "mfa_recovery_codes" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" uuid NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+	-- Hashed like a password, because that is what it is.
+	"code_hash" text NOT NULL,
+	"used_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+CREATE INDEX "mfa_recovery_user_idx" ON "mfa_recovery_codes" ("user_id");--> statement-breakpoint
+
+CREATE TABLE "user_devices" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" uuid NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+	-- SHA-256 of the refresh token family. Never the token: this table is read
+	-- by the account screen, and a token here would be a token on a web page.
+	"session_hash" text NOT NULL UNIQUE,
+	"label" text,
+	"ip_address" text,
+	"user_agent" text,
+	"trusted" boolean DEFAULT false NOT NULL,
+	"last_seen_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"revoked_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+CREATE INDEX "user_devices_user_idx" ON "user_devices" ("user_id", "last_seen_at");

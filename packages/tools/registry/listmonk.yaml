@@ -1,0 +1,25 @@
+id: listmonk
+name: Listmonk
+category: email
+summary: Self-hosted newsletter and transactional mailing lists
+repo: https://github.com/knadh/listmonk
+license: AGPL-3.0
+flavors: [sisaas, platform]
+
+env:
+  - key: LISTMONK_URL
+    value: "http://localhost:9010"
+  - key: LISTMONK_API_USER
+    value: "{{brand}}"
+  - key: LISTMONK_API_TOKEN
+
+compose: compose.yml
+
+deploy:
+  image: listmonk/listmonk:v5.0.3
+  port: 9000
+  needsDatabase: true
+  ingress: true
+
+notes:
+  - "Run `--install` once against a fresh database before first use."

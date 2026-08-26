@@ -1,0 +1,18 @@
+import { Module } from '@nestjs/common';
+import { JoonapayClient } from './domain/joonapay.client';
+import { JoonapayProvider } from './application/joonapay.provider';
+import { JoonapayPaymentsRepository } from './infrastructure/joonapay-payments.repository';
+import { JoonapayController } from './interface/joonapay.controller';
+
+/**
+ * JoonaPay — Mobile Money, cards and Wave across West Africa, plus payouts.
+ *
+ * The provider registers itself with the global PaymentRegistry on init, so the
+ * rest of the application talks to `PaymentProvider` and never names JoonaPay.
+ */
+@Module({
+  controllers: [JoonapayController],
+  providers: [JoonapayClient, JoonapayProvider, JoonapayPaymentsRepository],
+  exports: [JoonapayProvider, JoonapayPaymentsRepository],
+})
+export class JoonapayModule {}

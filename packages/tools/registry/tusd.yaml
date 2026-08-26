@@ -1,0 +1,34 @@
+id: tusd
+name: tusd
+category: storage
+summary: Resumable file uploads over the tus protocol, straight to S3
+repo: https://github.com/tus/tusd
+license: MIT
+flavors: [sisaas, sibile-rn, sibile-capacitor, platform]
+
+deps:
+  server:
+    - undici
+  web:
+    - tus-js-client
+
+env:
+  - key: TUSD_URL
+    value: http://localhost:1080/files/
+    comment: Endpoint the browser uploads to
+  - key: TUSD_HOOK_SECRET
+    value: tusd_dev_hook_secret_change_me
+    comment: Shared secret tusd signs its completion callback with
+
+compose: compose.yml
+
+deploy:
+  image: tusproject/tusd:v2.9.0
+  port: 8080
+  ingress: true
+
+notes:
+  - "Bytes never pass through the API — tusd writes directly to the S3 bucket, and the API only records the result."
+  - "The completion hook is HMAC-signed. Verify it: an unauthenticated hook lets anyone claim a file was uploaded."
+  - "Worth it for large files or poor networks. A presigned PUT is simpler for anything small."
+  - "Emits webhooks. Bridge them onto the event bus with `si add integrations` and enable a `tusd` source in `webhook-sources.ts` — then react to it like any other Kafka event, instead of writing a bespoke listener."

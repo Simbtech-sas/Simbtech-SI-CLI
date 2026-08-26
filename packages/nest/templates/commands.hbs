@@ -1,0 +1,139 @@
+import { NotFoundException } from '@nestjs/common';
+import { CommandHandler, type ICommandHandler } from '@nestjs/cqrs';
+{{#if events}}
+import { {{entity}}Created, {{entity}}Deleted, {{entity}}Updated } from '@{{brand}}/events';
+{{/if}}
+import { DatabaseService } from '{{srcUp}}/database/database.service';
+{{#if events}}
+import { OutboxService } from '../../events/application/outbox.service';
+{{/if}}
+import type { New{{entity}}, {{entity}}Patch } from '../domain/{{entityKebab}}';
+import { {{modulePascal}}Repository } from '../infrastructure/{{moduleKebab}}.repository';
+
+/**
+ * CQRS write side. Same unit-of-work rule as the plain service: the handler owns
+ * one transaction{{#if events}} and the outbox write happens inside it{{/if}}. The bus is the only
+ * difference — do not let it become a second place transactions are managed.
+ */
+
+export class Create{{entity}}Command {
+  constructor(
+{{#if tenantScoped}}
+    readonly tenantId: string,
+{{/if}}
+    readonly input: New{{entity}},
+  ) {}
+}
+
+export class Update{{entity}}Command {
+  constructor(
+{{#if tenantScoped}}
+    readonly tenantId: string,
+{{/if}}
+    readonly id: string,
+    readonly patch: {{entity}}Patch,
+  ) {}
+}
+
+export class Delete{{entity}}Command {
+  constructor(
+{{#if tenantScoped}}
+    readonly tenantId: string,
+{{/if}}
+    readonly id: string,
+  ) {}
+}
+
+@CommandHandler(Create{{entity}}Command)
+export class Create{{entity}}Handler implements ICommandHandler<Create{{entity}}Command> {
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly repo: {{modulePascal}}Repository,
+{{#if events}}
+    private readonly outbox: OutboxService,
+{{/if}}
+  ) {}
+
+  execute(command: Create{{entity}}Command) {
+    return this.db.{{#if tenantScoped}}runInTenantContext(command.tenantId, {{else}}db.transaction({{/if}}async (tx) => {
+      const row = await this.repo.create(tx, {{#if tenantScoped}}command.tenantId, {{/if}}command.input);
+{{#if events}}
+      await this.outbox.publish(tx, {{entity}}Created, {
+        aggregateId: row.id,
+{{#if tenantScoped}}
+        tenantId: command.tenantId,
+{{/if}}
+        payload: { id: row.id },
+      });
+{{/if}}
+      return row;
+    });
+  }
+}
+
+@CommandHandler(Update{{entity}}Command)
+export class Update{{entity}}Handler implements ICommandHandler<Update{{entity}}Command> {
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly repo: {{modulePascal}}Repository,
+{{#if events}}
+    private readonly outbox: OutboxService,
+{{/if}}
+  ) {}
+
+  async execute(command: Update{{entity}}Command) {
+    const row = await this.db.{{#if tenantScoped}}runInTenantContext(command.tenantId, {{else}}db.transaction({{/if}}async (tx) => {
+      const updated = await this.repo.update(tx, command.id, command.patch);
+      if (!updated) return undefined;
+{{#if events}}
+      await this.outbox.publish(tx, {{entity}}Updated, {
+        aggregateId: updated.id,
+{{#if tenantScoped}}
+        tenantId: command.tenantId,
+{{/if}}
+        payload: { id: updated.id },
+      });
+{{/if}}
+      return updated;
+    });
+    if (!row) throw new NotFoundException('{{entity}} not found');
+    return row;
+  }
+}
+
+@CommandHandler(Delete{{entity}}Command)
+export class Delete{{entity}}Handler implements ICommandHandler<Delete{{entity}}Command> {
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly repo: {{modulePascal}}Repository,
+{{#if events}}
+    private readonly outbox: OutboxService,
+{{/if}}
+  ) {}
+
+  async execute(command: Delete{{entity}}Command) {
+    const ok = await this.db.{{#if tenantScoped}}runInTenantContext(command.tenantId, {{else}}db.transaction({{/if}}async (tx) => {
+      const removed = await this.repo.remove(tx, command.id);
+{{#if events}}
+      if (removed) {
+        await this.outbox.publish(tx, {{entity}}Deleted, {
+          aggregateId: command.id,
+{{#if tenantScoped}}
+          tenantId: command.tenantId,
+{{/if}}
+          payload: { id: command.id },
+        });
+      }
+{{/if}}
+      return removed;
+    });
+    if (!ok) throw new NotFoundException('{{entity}} not found');
+    return { ok: true };
+  }
+}
+
+export const {{modulePascal}}CommandHandlers = [
+  Create{{entity}}Handler,
+  Update{{entity}}Handler,
+  Delete{{entity}}Handler,
+];

@@ -1,0 +1,18 @@
+import { Module } from '@nestjs/common';
+import { CqrsModule } from '@nestjs/cqrs';
+import { IamModule } from '../iam/iam.module';
+import { {{modulePascal}}CommandHandlers } from './application/{{moduleKebab}}.commands';
+import { {{modulePascal}}QueryHandlers } from './application/{{moduleKebab}}.queries';
+import { {{modulePascal}}Repository } from './infrastructure/{{moduleKebab}}.repository';
+import { {{modulePascal}}Controller } from './interface/{{moduleKebab}}.controller';
+
+@Module({
+  imports: [CqrsModule, IamModule],
+  controllers: [{{modulePascal}}Controller],
+  providers: [
+    {{modulePascal}}Repository,
+    ...{{modulePascal}}CommandHandlers,
+    ...{{modulePascal}}QueryHandlers,
+  ],
+})
+export class {{modulePascal}}Module {}

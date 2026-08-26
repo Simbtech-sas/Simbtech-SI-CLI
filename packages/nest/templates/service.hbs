@@ -1,0 +1,96 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+{{#if events}}
+import { {{entity}}Created, {{entity}}Deleted, {{entity}}Updated } from '@{{brand}}/events';
+{{/if}}
+import { DatabaseService } from '{{srcUp}}/database/database.service';
+{{#if events}}
+import { OutboxService } from '../../events/application/outbox.service';
+{{/if}}
+import type { New{{entity}}, {{entity}}Patch } from '../domain/{{entityKebab}}';
+import { {{modulePascal}}Repository } from '../infrastructure/{{moduleKebab}}.repository';
+
+/**
+ * The unit of work lives here, not in the repository. Every write opens ONE
+{{#if tenantScoped}}
+ * tenant-scoped transaction{{#if events}} and does both halves inside it: the domain change
+ * and the outbox row announcing it. Roll back and neither happened{{/if}}.
+{{else}}
+ * transaction{{#if events}}, so the domain change and the outbox row announcing it commit
+ * together{{/if}}.
+{{/if}}
+ */
+@Injectable()
+export class {{modulePascal}}Service {
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly repo: {{modulePascal}}Repository,
+{{#if events}}
+    private readonly outbox: OutboxService,
+{{/if}}
+  ) {}
+
+  list({{#if tenantScoped}}tenantId: string{{/if}}) {
+    return this.db.{{#if tenantScoped}}runInTenantContext(tenantId, {{else}}db.transaction({{/if}}(tx) => this.repo.list(tx));
+  }
+
+  async get({{#if tenantScoped}}tenantId: string, {{/if}}id: string) {
+    const row = await this.db.{{#if tenantScoped}}runInTenantContext(tenantId, {{else}}db.transaction({{/if}}(tx) => this.repo.get(tx, id));
+    if (!row) throw new NotFoundException('{{entity}} not found');
+    return row;
+  }
+
+  create({{#if tenantScoped}}tenantId: string, {{/if}}input: New{{entity}}) {
+    return this.db.{{#if tenantScoped}}runInTenantContext(tenantId, {{else}}db.transaction({{/if}}async (tx) => {
+      const row = await this.repo.create(tx, {{#if tenantScoped}}tenantId, {{/if}}input);
+{{#if events}}
+      await this.outbox.publish(tx, {{entity}}Created, {
+        aggregateId: row.id,
+{{#if tenantScoped}}
+        tenantId,
+{{/if}}
+        payload: { id: row.id },
+      });
+{{/if}}
+      return row;
+    });
+  }
+
+  async update({{#if tenantScoped}}tenantId: string, {{/if}}id: string, patch: {{entity}}Patch) {
+    const row = await this.db.{{#if tenantScoped}}runInTenantContext(tenantId, {{else}}db.transaction({{/if}}async (tx) => {
+      const updated = await this.repo.update(tx, id, patch);
+      if (!updated) return undefined;
+{{#if events}}
+      await this.outbox.publish(tx, {{entity}}Updated, {
+        aggregateId: updated.id,
+{{#if tenantScoped}}
+        tenantId,
+{{/if}}
+        payload: { id: updated.id },
+      });
+{{/if}}
+      return updated;
+    });
+    if (!row) throw new NotFoundException('{{entity}} not found');
+    return row;
+  }
+
+  async remove({{#if tenantScoped}}tenantId: string, {{/if}}id: string) {
+    const ok = await this.db.{{#if tenantScoped}}runInTenantContext(tenantId, {{else}}db.transaction({{/if}}async (tx) => {
+      const removed = await this.repo.remove(tx, id);
+{{#if events}}
+      if (removed) {
+        await this.outbox.publish(tx, {{entity}}Deleted, {
+          aggregateId: id,
+{{#if tenantScoped}}
+          tenantId,
+{{/if}}
+          payload: { id },
+        });
+      }
+{{/if}}
+      return removed;
+    });
+    if (!ok) throw new NotFoundException('{{entity}} not found');
+    return { ok: true };
+  }
+}

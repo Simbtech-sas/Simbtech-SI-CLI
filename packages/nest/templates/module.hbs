@@ -1,0 +1,13 @@
+import { Module } from '@nestjs/common';
+import { IamModule } from '../iam/iam.module';
+import { {{modulePascal}}Service } from './application/{{moduleKebab}}.service';
+import { {{modulePascal}}Repository } from './infrastructure/{{moduleKebab}}.repository';
+import { {{modulePascal}}Controller } from './interface/{{moduleKebab}}.controller';
+
+@Module({
+  imports: [IamModule], // for JwtAccessGuard
+  controllers: [{{modulePascal}}Controller],
+  providers: [{{modulePascal}}Service, {{modulePascal}}Repository],
+  exports: [{{modulePascal}}Service],
+})
+export class {{modulePascal}}Module {}

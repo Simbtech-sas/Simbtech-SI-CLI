@@ -1,0 +1,49 @@
+import { NotFoundException } from '@nestjs/common';
+import { QueryHandler, type IQueryHandler } from '@nestjs/cqrs';
+import { DatabaseService } from '{{srcUp}}/database/database.service';
+import { {{modulePascal}}Repository } from '../infrastructure/{{moduleKebab}}.repository';
+
+/** CQRS read side. Reads still run in the tenant context — RLS applies to SELECT. */
+
+export class List{{entityPlural}}Query {
+{{#if tenantScoped}}
+  constructor(readonly tenantId: string) {}
+{{/if}}
+}
+
+export class Get{{entity}}Query {
+  constructor(
+{{#if tenantScoped}}
+    readonly tenantId: string,
+{{/if}}
+    readonly id: string,
+  ) {}
+}
+
+@QueryHandler(List{{entityPlural}}Query)
+export class List{{entityPlural}}Handler implements IQueryHandler<List{{entityPlural}}Query> {
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly repo: {{modulePascal}}Repository,
+  ) {}
+
+  execute(query: List{{entityPlural}}Query) {
+    return this.db.{{#if tenantScoped}}runInTenantContext(query.tenantId, {{else}}db.transaction({{/if}}(tx) => this.repo.list(tx));
+  }
+}
+
+@QueryHandler(Get{{entity}}Query)
+export class Get{{entity}}Handler implements IQueryHandler<Get{{entity}}Query> {
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly repo: {{modulePascal}}Repository,
+  ) {}
+
+  async execute(query: Get{{entity}}Query) {
+    const row = await this.db.{{#if tenantScoped}}runInTenantContext(query.tenantId, {{else}}db.transaction({{/if}}(tx) => this.repo.get(tx, query.id));
+    if (!row) throw new NotFoundException('{{entity}} not found');
+    return row;
+  }
+}
+
+export const {{modulePascal}}QueryHandlers = [List{{entityPlural}}Handler, Get{{entity}}Handler];

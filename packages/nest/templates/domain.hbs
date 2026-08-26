@@ -1,0 +1,14 @@
+import type { {{entityPluralCamel}} } from '{{srcUp}}/database/schema';
+
+export type {{entity}} = typeof {{entityPluralCamel}}.$inferSelect;
+
+export type New{{entity}} = {
+{{#each fields}}
+  {{this.camel}}{{#if this.optional}}?{{/if}}: {{this.tsType}};
+{{/each}}
+{{#unless hasFields}}
+  // Add the fields a caller may set. Server-owned columns stay out of this type.
+{{/unless}}
+};
+
+export type {{entity}}Patch = Partial<New{{entity}}>;

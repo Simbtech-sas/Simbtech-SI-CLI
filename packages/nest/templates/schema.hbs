@@ -1,0 +1,38 @@
+import {
+  index,
+  pgTable,
+{{#each drizzleImports}}
+  {{this}},
+{{/each}}
+} from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+{{#if tenantScoped}}
+import { tenants } from './tenants';
+{{/if}}
+
+{{#if tenantScoped}}
+// Tenant-scoped table. Every row carries `tenant_id`; RLS (see
+// drizzle/{{migrationNumber}}_{{table}}.sql) confines all access to the current tenant
+// context, so no query needs a manual `where tenant_id = ...`.
+{{/if}}
+export const {{entityPluralCamel}} = pgTable(
+  '{{table}}',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+{{#if tenantScoped}}
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id, { onDelete: 'cascade' }),
+{{/if}}
+{{#each fields}}
+    {{this.camel}}: {{this.drizzle}},
+{{/each}}
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+{{#if tenantScoped}}
+  (t) => [index('{{table}}_tenant_idx').on(t.tenantId)],
+{{else}}
+  () => [],
+{{/if}}
+);

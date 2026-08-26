@@ -1,0 +1,22 @@
+import { createZodDto } from 'nestjs-zod';
+import { z } from 'zod';
+
+export class Create{{entity}}Dto extends createZodDto(
+  z.object({
+{{#each fields}}
+    {{this.camel}}: {{this.zodCreate}},
+{{/each}}
+{{#unless hasFields}}
+    // Add the request shape here. Server-owned values (tenant id, actor) come
+    // from the verified token, never the body.
+{{/unless}}
+  }),
+) {}
+
+export class Update{{entity}}Dto extends createZodDto(
+  z.object({
+{{#each fields}}
+    {{this.camel}}: {{this.zodUpdate}},
+{{/each}}
+  }),
+) {}

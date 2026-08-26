@@ -1,0 +1,29 @@
+-- {{entityPlural}}. Hand-written and numbered; drizzle-kit generate is a diff aid,
+-- not the source of truth.
+{{#if tenantScoped}}
+--
+-- Tenant-scoped: ENABLE *and* FORCE row level security. FORCE is what makes the
+-- policy apply to the table owner too — without it, migrations and anything else
+-- connecting as the owner read every tenant's rows.
+{{/if}}
+
+CREATE TABLE "{{table}}" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+{{#if tenantScoped}}
+	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+{{/if}}
+{{#each fields}}
+	{{this.sql}},
+{{/each}}
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);--> statement-breakpoint
+{{#if tenantScoped}}
+CREATE INDEX "{{table}}_tenant_idx" ON "{{table}}" ("tenant_id");--> statement-breakpoint
+
+ALTER TABLE "{{table}}" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+ALTER TABLE "{{table}}" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
+CREATE POLICY "tenant_isolation" ON "{{table}}"
+	USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
+	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);
+{{/if}}

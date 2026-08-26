@@ -1,0 +1,66 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+{{#if tenantScoped}}
+import type { AccessTokenPayload } from '../../iam/domain/jwt-payload';
+import { CurrentPrincipal } from '../../iam/interface/current-principal.decorator';
+{{/if}}
+import { JwtAccessGuard } from '../../iam/interface/jwt-access.guard';
+import { {{modulePascal}}Service } from '../application/{{moduleKebab}}.service';
+import { Create{{entity}}Dto, Update{{entity}}Dto } from './dto';
+
+{{#if tenantScoped}}
+/**
+ * Tenant-scoped CRUD. The tenant id comes from the verified access token, never
+ * the client body, and is passed down to runInTenantContext() — RLS, not this
+ * code, is the isolation boundary.
+ */
+{{/if}}
+@Controller('{{entityPluralKebab}}')
+@UseGuards(JwtAccessGuard)
+export class {{modulePascal}}Controller {
+  constructor(private readonly {{entityPluralCamel}}: {{modulePascal}}Service) {}
+
+  @Get()
+  list({{#if tenantScoped}}@CurrentPrincipal() p: AccessTokenPayload{{/if}}) {
+    return this.{{entityPluralCamel}}.list({{#if tenantScoped}}p.tenantId{{/if}});
+  }
+
+  @Get(':id')
+  get({{#if tenantScoped}}@CurrentPrincipal() p: AccessTokenPayload, {{/if}}@Param('id') id: string) {
+    return this.{{entityPluralCamel}}.get({{#if tenantScoped}}p.tenantId, {{/if}}id);
+  }
+
+  @Post()
+  create(
+{{#if tenantScoped}}
+    @CurrentPrincipal() p: AccessTokenPayload,
+{{/if}}
+    @Body() dto: Create{{entity}}Dto,
+  ) {
+    return this.{{entityPluralCamel}}.create({{#if tenantScoped}}p.tenantId, {{/if}}dto);
+  }
+
+  @Patch(':id')
+  update(
+{{#if tenantScoped}}
+    @CurrentPrincipal() p: AccessTokenPayload,
+{{/if}}
+    @Param('id') id: string,
+    @Body() dto: Update{{entity}}Dto,
+  ) {
+    return this.{{entityPluralCamel}}.update({{#if tenantScoped}}p.tenantId, {{/if}}id, dto);
+  }
+
+  @Delete(':id')
+  remove({{#if tenantScoped}}@CurrentPrincipal() p: AccessTokenPayload, {{/if}}@Param('id') id: string) {
+    return this.{{entityPluralCamel}}.remove({{#if tenantScoped}}p.tenantId, {{/if}}id);
+  }
+}

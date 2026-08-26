@@ -1,0 +1,29 @@
+
+// ── {{entity}} ────────────────────────────────────────────────────────────────
+const {{entityCamel}}Payload = z.object({
+  id: z.string().uuid(),
+});
+
+export const {{entity}}Created = defineEvent({
+  service: '{{brand}}',
+  aggregate: '{{entityKebab}}',
+  type: '{{entity}}Created',
+  version: 1,
+  schema: {{entityCamel}}Payload,
+});
+
+export const {{entity}}Updated = defineEvent({
+  service: '{{brand}}',
+  aggregate: '{{entityKebab}}',
+  type: '{{entity}}Updated',
+  version: 1,
+  schema: {{entityCamel}}Payload,
+});
+
+export const {{entity}}Deleted = defineEvent({
+  service: '{{brand}}',
+  aggregate: '{{entityKebab}}',
+  type: '{{entity}}Deleted',
+  version: 1,
+  schema: {{entityCamel}}Payload,
+});

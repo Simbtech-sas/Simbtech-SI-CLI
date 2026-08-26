@@ -1,0 +1,68 @@
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { CommandBus, QueryBus } from '@nestjs/cqrs';
+{{#if tenantScoped}}
+import type { AccessTokenPayload } from '../../iam/domain/jwt-payload';
+import { CurrentPrincipal } from '../../iam/interface/current-principal.decorator';
+{{/if}}
+import { JwtAccessGuard } from '../../iam/interface/jwt-access.guard';
+import {
+  Create{{entity}}Command,
+  Delete{{entity}}Command,
+  Update{{entity}}Command,
+} from '../application/{{moduleKebab}}.commands';
+import { Get{{entity}}Query, List{{entityPlural}}Query } from '../application/{{moduleKebab}}.queries';
+import { Create{{entity}}Dto, Update{{entity}}Dto } from './dto';
+
+@Controller('{{entityPluralKebab}}')
+@UseGuards(JwtAccessGuard)
+export class {{modulePascal}}Controller {
+  constructor(
+    private readonly commands: CommandBus,
+    private readonly queries: QueryBus,
+  ) {}
+
+  @Get()
+  list({{#if tenantScoped}}@CurrentPrincipal() p: AccessTokenPayload{{/if}}) {
+    return this.queries.execute(new List{{entityPlural}}Query({{#if tenantScoped}}p.tenantId{{/if}}));
+  }
+
+  @Get(':id')
+  get({{#if tenantScoped}}@CurrentPrincipal() p: AccessTokenPayload, {{/if}}@Param('id') id: string) {
+    return this.queries.execute(new Get{{entity}}Query({{#if tenantScoped}}p.tenantId, {{/if}}id));
+  }
+
+  @Post()
+  create(
+{{#if tenantScoped}}
+    @CurrentPrincipal() p: AccessTokenPayload,
+{{/if}}
+    @Body() dto: Create{{entity}}Dto,
+  ) {
+    return this.commands.execute(new Create{{entity}}Command({{#if tenantScoped}}p.tenantId, {{/if}}dto));
+  }
+
+  @Patch(':id')
+  update(
+{{#if tenantScoped}}
+    @CurrentPrincipal() p: AccessTokenPayload,
+{{/if}}
+    @Param('id') id: string,
+    @Body() dto: Update{{entity}}Dto,
+  ) {
+    return this.commands.execute(new Update{{entity}}Command({{#if tenantScoped}}p.tenantId, {{/if}}id, dto));
+  }
+
+  @Delete(':id')
+  remove({{#if tenantScoped}}@CurrentPrincipal() p: AccessTokenPayload, {{/if}}@Param('id') id: string) {
+    return this.commands.execute(new Delete{{entity}}Command({{#if tenantScoped}}p.tenantId, {{/if}}id));
+  }
+}

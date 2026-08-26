@@ -1,0 +1,50 @@
+import { Injectable } from '@nestjs/common';
+import { desc, eq } from 'drizzle-orm';
+import type { TenantTx } from '{{srcUp}}/database/database.service';
+import { {{entityPluralCamel}} } from '{{srcUp}}/database/schema';
+import type { New{{entity}}, {{entity}}, {{entity}}Patch } from '../domain/{{entityKebab}}';
+
+/**
+ * Pure data access. Every method takes the caller's transaction rather than
+ * opening its own, so the service can write a row and its outbox event in one
+ * unit of work.
+{{#if tenantScoped}}
+ *
+ * That transaction always carries the tenant GUC, so RLS confines these queries.
+ * Never add a manual `where tenant_id = ...` — the database enforces it, and a
+ * hand-written filter that drifts is exactly the bug RLS removes.
+{{/if}}
+ */
+@Injectable()
+export class {{modulePascal}}Repository {
+  list(tx: TenantTx): Promise<{{entity}}[]> {
+    return tx.select().from({{entityPluralCamel}}).orderBy(desc({{entityPluralCamel}}.createdAt));
+  }
+
+  async get(tx: TenantTx, id: string): Promise<{{entity}} | undefined> {
+    const [row] = await tx.select().from({{entityPluralCamel}}).where(eq({{entityPluralCamel}}.id, id)).limit(1);
+    return row;
+  }
+
+  async create(tx: TenantTx, {{#if tenantScoped}}tenantId: string, {{/if}}input: New{{entity}}): Promise<{{entity}}> {
+    const [row] = await tx
+      .insert({{entityPluralCamel}})
+      .values({ {{#if tenantScoped}}tenantId, {{/if}}...input })
+      .returning();
+    return row!;
+  }
+
+  async update(tx: TenantTx, id: string, patch: {{entity}}Patch): Promise<{{entity}} | undefined> {
+    const [row] = await tx
+      .update({{entityPluralCamel}})
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq({{entityPluralCamel}}.id, id))
+      .returning();
+    return row;
+  }
+
+  async remove(tx: TenantTx, id: string): Promise<boolean> {
+    const rows = await tx.delete({{entityPluralCamel}}).where(eq({{entityPluralCamel}}.id, id)).returning({ id: {{entityPluralCamel}}.id });
+    return rows.length > 0;
+  }
+}

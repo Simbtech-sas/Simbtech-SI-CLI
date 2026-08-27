@@ -1,0 +1,24 @@
+# App of apps. Everything in gitops/apps/ is discovered from here, so adding a
+# service is adding a file — no cluster access needed to deploy one.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: simbkit-root
+  namespace: argocd
+spec:
+  project: simbkit
+  source:
+    repoURL: https://github.com/simbkit/platform.git
+    targetRevision: main
+    path: gitops/apps
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,85 @@
+# Traefik is the ingress controller AND the API gateway.
+#
+# k3s bundles it, so this CONFIGURES the existing release rather than installing
+# a second one. Two Traefiks fight over :80 and :443 and the loser crash-loops —
+# `HelmChartConfig` merges onto the chart k3s already manages.
+#
+# Keep `valuesContent` a compatible subset: the merge is shallow, so setting
+# `ports.*` here would drop the chart's own port and expose definitions.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    providers:
+      kubernetesIngress:
+        publishedService:
+          enabled: true
+        allowEmptyServices: true
+      # Needed for the Middleware and TraefikService objects below.
+      kubernetesCRD:
+        enabled: true
+        allowCrossNamespace: false
+    metrics:
+      prometheus:
+        entryPoint: metrics
+    logs:
+      general:
+        level: INFO
+      access:
+        enabled: true
+        # The default logs every header. An Authorization header in a log
+        # aggregator is a credential in a lower-trust store.
+        fields:
+          headers:
+            defaultMode: drop
+            names:
+              User-Agent: keep
+              X-Request-Id: keep
+---
+# HTTP always redirects to HTTPS. A service reachable over cleartext is one a
+# client will eventually use over cleartext.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: https-redirect
+  namespace: edge
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+# Baseline response headers for anything exposed through the gateway.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: security-headers
+  namespace: edge
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    contentTypeNosniff: true
+    frameDeny: true
+    referrerPolicy: strict-origin-when-cross-origin
+---
+# Gateway-level rate limit. The application limits per user and per tenant; this
+# one exists to keep a single source from reaching the application at all.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: rate-limit
+  namespace: edge
+spec:
+  rateLimit:
+    average: 100
+    burst: 200
+    period: 1s
+    sourceCriterion:
+      # X-Forwarded-For, one hop back — the load balancer in front of Traefik.
+      # Trusting the whole chain lets a client forge its own source address.
+      ipStrategy:
+        depth: 1

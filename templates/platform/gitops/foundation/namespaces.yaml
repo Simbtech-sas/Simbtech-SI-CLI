@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: data
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: simbkit
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: edge
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager

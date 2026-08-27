@@ -1,0 +1,18 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: simbkit
+  namespace: argocd
+spec:
+  description: Simbkit platform
+  sourceRepos:
+    - 'https://github.com/simbkit/*'
+    - 'https://charts.jetstack.io'
+    - 'https://cloudnative-pg.github.io/charts'
+    - 'https://strimzi.io/charts'
+  destinations:
+    - namespace: '*'
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'

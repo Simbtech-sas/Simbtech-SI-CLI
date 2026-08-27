@@ -1,0 +1,51 @@
+# Three issuers, used in this order as a deployment matures.
+#
+# `letsencrypt-staging` first, ALWAYS. Production Let's Encrypt allows 5 failures
+# per account per hour and 50 certificates per domain per week; debugging an
+# HTTP-01 challenge against it will exhaust that quota and lock you out for a
+# week with no certificate at all.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: platform@simbkit.local
+    privateKeySecretRef:
+      name: letsencrypt-staging-account
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: platform@simbkit.local
+    privateKeySecretRef:
+      name: letsencrypt-account
+    solvers:
+      # HTTP-01: no DNS credentials needed, but it CANNOT issue a wildcard and
+      # requires the host to be publicly reachable on :80.
+      - http01:
+          ingress:
+            ingressClassName: traefik
+      # DNS-01, for wildcards and for hosts not exposed to the internet. Needs a
+      # provider token — uncomment once the secret exists.
+      # - dns01:
+      #     cloudflare:
+      #       apiTokenSecretRef: { name: cloudflare-api-token, key: token }
+      #   selector:
+      #     dnsZones: ['simbkit.com']

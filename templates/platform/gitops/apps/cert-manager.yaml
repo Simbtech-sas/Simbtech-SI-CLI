@@ -1,0 +1,36 @@
+# cert-manager. Without it, every `cert-manager.io/cluster-issuer` annotation the
+# service generator emits is inert — the Ingress serves no certificate and the
+# failure is silent until someone opens the URL.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cert-manager
+  namespace: argocd
+spec:
+  project: simbkit
+  sources:
+    - repoURL: https://charts.jetstack.io
+      chart: cert-manager
+      targetRevision: v1.19.1
+      helm:
+        values: |
+          crds:
+            enabled: true
+          # A scrape target from day one; an expiry nobody is alerted on is an
+          # outage with a 90-day fuse.
+          prometheus:
+            enabled: true
+            servicemonitor:
+              enabled: true
+    - repoURL: https://github.com/simbkit/platform.git
+      targetRevision: main
+      path: gitops/edge
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: cert-manager
+  syncPolicy:
+    automated: { prune: true, selfHeal: true }
+    syncOptions:
+      - CreateNamespace=true
+      # The CRDs are large enough to exceed the annotation size limit.
+      - ServerSideApply=true

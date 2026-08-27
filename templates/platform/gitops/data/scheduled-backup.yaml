@@ -1,0 +1,12 @@
+# A backup nobody scheduled is a backup nobody has. Restores must be rehearsed —
+# see docs/RUNBOOK.md.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: simbkit-pg-nightly
+  namespace: data
+spec:
+  schedule: '0 0 2 * * *'
+  backupOwnerReference: self
+  cluster:
+    name: simbkit-pg

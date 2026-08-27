@@ -1,0 +1,51 @@
+# ONE Postgres cluster, many databases — the shared data service.
+#
+# The alternative (a StatefulSet per service) means N single-instance databases,
+# none replicated, none backed up, each a separate 3am problem. CloudNativePG
+# gives one operator handling failover, backups and PITR for all of them, while
+# each service still owns its own database and migrations. See
+# docs/adr-001-events-and-data.md.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: simbkit-pg
+  namespace: data
+spec:
+  # Three, not one. A single instance is a single point of failure for every
+  # service at once — the risk that consolidation concentrates.
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.7
+
+  postgresql:
+    parameters:
+      # Debezium reads the WAL. Without logical decoding the outbox never leaves
+      # the database and no service hears about anything.
+      wal_level: logical
+      max_replication_slots: '32'
+      max_wal_senders: '32'
+      max_connections: '400'
+
+  storage:
+    size: 50Gi
+    storageClass: local-path
+
+  monitoring:
+    enablePodMonitor: true
+
+  backup:
+    retentionPolicy: 30d
+    barmanObjectStore:
+      destinationPath: s3://simbkit-backups/postgres
+      endpointURL: http://minio.data.svc:9000
+      s3Credentials:
+        accessKeyId:
+          name: pg-backup-creds
+          key: ACCESS_KEY_ID
+        secretAccessKey:
+          name: pg-backup-creds
+          key: ACCESS_SECRET_KEY
+      wal:
+        compression: gzip
+
+  # Services reach this at simbkit-pg-rw.data.svc.cluster.local:5432 (writes) and
+  # simbkit-pg-ro.data.svc.cluster.local:5432 (read replicas).

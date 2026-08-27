@@ -1,0 +1,17 @@
+{
+  "name": "simbkit-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Simbkit infrastructure control plane",
+  "scripts": {
+    "build": "npm --prefix apps/control-plane run build",
+    "typecheck": "npm --prefix apps/control-plane run typecheck",
+    "test": "npm --prefix apps/control-plane test",
+    "node:add": "node apps/control-plane/src/main.ts node add",
+    "node:list": "node apps/control-plane/src/main.ts node list",
+    "service:add": "node apps/control-plane/src/main.ts service add",
+    "verify": "bash scripts/verify.sh",
+    "verify:security": "bash scripts/verify-security.sh"
+  }
+}

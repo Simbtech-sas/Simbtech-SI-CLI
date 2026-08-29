@@ -1,0 +1,157 @@
+id: public-sector
+name: Sécurité, souveraineté et traçabilité — systèmes d'information publics
+summary: The rigour a state information system is held to — and anyone who wants the same bar
+# Named after the standard, not an organisation: the same requirements apply to
+# any system holding public data, and a dataset tied to one client's name is one
+# nobody else reads.
+jurisdiction: Cameroun
+references:
+  - "Loi n°2024/017 du 23 décembre 2024 — protection des données à caractère personnel (Cameroun)"
+  - OWASP Top 10
+  - ISO/IEC 27001 (kind: reference, not certification)
+
+sections:
+  - id: '3.1'
+    title: Sécurité du système d'information
+    requirements:
+      - { id: 3.1.1,  title: Security by Design,                     kind: partial, check: { file: 'AGENTS.md', contains: 'Security is not negotiable' } }
+      - { id: 3.1.2,  title: Zero Trust,                             kind: partial, note: 'Every request is authenticated and tenant-scoped; network-level Zero Trust is an infrastructure decision.' }
+      - { id: 3.1.3,  title: Least Privilege,                        kind: code,    check: { file: 'infra/postgres/initdb/01-init.sql', contains: 'NOBYPASSRLS' } }
+      - { id: 3.1.4,  title: Segmentation réseau,                    kind: manual,  note: 'WireGuard mesh + namespaces exist in the platform repo; the segmentation plan is an operator decision.' }
+      - { id: 3.1.5,  title: Défense en profondeur,                  kind: partial }
+      - { id: 3.1.6,  title: Hardening systèmes et conteneurs,       kind: manual,  note: 'Image hardening and CIS benchmarks are an operations task.' }
+      - { id: 3.1.7,  title: Secure SDLC,                            kind: code,    check: { file: '.github/workflows/ci.yml' } }
+      - { id: 3.1.8,  title: Gestion des vulnérabilités,             kind: partial, check: { file: '.github/workflows/ci.yml', contains: 'pnpm audit' }, note: 'pnpm audit runs on every PR, advisory not blocking. Container image scanning is not set up.' }
+      - { id: 3.1.9,  title: Tests d'intrusion,                      kind: manual }
+      - { id: 3.1.10, title: Analyse de code SAST/DAST,              kind: absent,  note: 'Lint and typecheck run in CI; neither is SAST. CodeQL or Semgrep is the next step.' }
+      - { id: 3.1.11, title: Protection OWASP Top 10,                kind: partial, check: { file: 'scripts/verify-security.sh' } }
+      - { id: 3.1.12, title: Protection contre DDoS,                 kind: manual,  note: 'Rate limiting is in the app; DDoS mitigation is an edge/network concern.' }
+      - { id: 3.1.13, title: Protection contre les injections,       kind: code,    check: { pattern: 'drizzle-orm', in: 'apps/server/package.json', note: 'Parameterised queries throughout; no string-built SQL.' } }
+      - { id: 3.1.14, title: Protection des sessions,                kind: code,    check: { file: 'apps/server/src/modules/iam/interface/auth.controller.ts', contains: 'httpOnly' } }
+      - { id: 3.1.15, title: Protection des secrets,                 kind: code,    check: { file: 'scripts/verify-security.sh', contains: 'secret' } }
+
+  - id: '4'
+    title: Identité, authentification et contrôle d'accès
+    requirements:
+      - { id: '4.1',  title: IAM centralisé,                         kind: code,    check: { anyTool: [keycloak, zitadel], orFile: 'apps/server/src/modules/iam' } }
+      - { id: '4.2',  title: RBAC,                                   kind: code,    check: { pattern: 'role', in: 'apps/server/src/modules/auth' } }
+      - { id: '4.3',  title: ABAC pour périmètres sensibles,         kind: absent,  provides: openfga }
+      - { id: '4.4',  title: MFA,                                    kind: code,    check: { file: 'apps/server/src/modules/mfa/application/mfa.service.ts' }, provides: auth-mfa }
+      - { id: '4.5',  title: Politique de mot de passe,              kind: code,    check: { file: 'apps/server/src/modules/mfa/domain/password-policy.ts' }, provides: auth-mfa }
+      - { id: '4.6',  title: Gestion des sessions,                   kind: code,    check: { pattern: 'refresh', in: 'apps/server/src/modules/iam' } }
+      - { id: '4.7',  title: Gestion des appareils,                  kind: code,    check: { file: 'apps/server/src/modules/mfa/application/devices.service.ts' }, provides: auth-mfa }
+      - { id: '4.8',  title: SSO institutionnel,                     kind: code,    check: { anyTool: [keycloak, zitadel] } }
+      - { id: '4.9',  title: Fédération d'identité,                  kind: code,    check: { anyTool: [keycloak, zitadel] } }
+      - { id: '4.10', title: Provisioning / deprovisioning,          kind: absent }
+      - { id: '4.11', title: Recertification des habilitations,      kind: manual }
+
+  - id: '5'
+    title: Protection cryptographique
+    requirements:
+      - { id: '5.1',  title: Chiffrement en transit (TLS 1.3),       kind: partial, check: { file: 'infra/traefik' }, note: 'cert-manager + Traefik in the platform; TLS 1.3 minimum must be set on the edge.' }
+      - { id: '5.2',  title: Chiffrement au repos,                   kind: code,    check: { file: 'apps/server/src/modules/security/application/encryption.ts' } }
+      - { id: '5.3',  title: Chiffrement des sauvegardes,            kind: manual,  note: 'CNPG backs up to S3; encryption is a bucket configuration.' }
+      - { id: '5.4',  title: Chiffrement des données sensibles,      kind: code,    check: { file: 'apps/server/src/modules/security/application/encryption.ts' } }
+      - { id: '5.5',  title: Gestion centralisée des clés,           kind: absent,  note: 'Keys are environment variables. A KMS or Vault is the next step.' }
+      - { id: '5.6',  title: Rotation des clés,                      kind: absent }
+      - { id: '5.7',  title: Séparation clés / données,              kind: partial, note: 'ENCRYPTION_KEY is separate from the JWT secrets on purpose.' }
+      - { id: '5.8',  title: PKI institutionnelle,                   kind: manual }
+      - { id: '5.9',  title: Certificats internes,                   kind: code,    check: { file: 'gitops/edge/cluster-issuers.yaml', repo: platform } }
+      - { id: '5.10', title: Signature numérique des documents,      kind: absent,  provides: documenso, note: 'Impose it where the act has legal or probative value, not everywhere.' }
+
+  - id: '6'
+    title: Protection des données et souveraineté numérique
+    requirements:
+      - { id: 6.1.1,  title: Registre des traitements,               kind: absent,  note: 'A document the organisation maintains; a template can be generated.' }
+      - { id: 6.1.2,  title: Classification des données,             kind: absent }
+      - { id: 6.1.3,  title: Minimisation des données,               kind: manual }
+      - { id: 6.1.4,  title: Finalité des traitements,               kind: manual }
+      - { id: 6.1.5,  title: Politique de conservation,              kind: absent }
+      - { id: 6.1.6,  title: Droit d'accès,                          kind: absent }
+      - { id: 6.1.7,  title: Droit de rectification,                 kind: absent }
+      - { id: 6.1.8,  title: Demandes des personnes concernées,      kind: absent }
+      - { id: 6.1.9,  title: Gestion des violations de données,      kind: absent }
+      - { id: 6.1.10, title: Encadrement des sous-traitants,         kind: manual }
+      - { id: 6.2.1,  title: Hébergement au Cameroun,                kind: manual,  note: 'The platform provisions any VPS you point it at. WHERE is a procurement decision, and belongs in the contract.' }
+      - { id: 6.2.2,  title: Bases de données au Cameroun,           kind: manual }
+      - { id: 6.2.3,  title: Sauvegardes critiques au Cameroun,      kind: manual }
+      - { id: 6.2.4,  title: Kafka et cache sous contrôle,           kind: code,    check: { file: 'infra/docker-compose.yml', contains: 'redpanda' }, note: 'Self-hosted, not a managed SaaS.' }
+      - { id: 6.2.5,  title: Interdiction de transfert international, kind: manual }
+      - { id: 6.2.6,  title: Interdiction de SaaS non approuvé,      kind: partial, note: 'Every registry tool is self-hostable; that is the registry contract.' }
+      - { id: 6.2.7,  title: Contrôle des accès administrateurs tiers, kind: manual }
+      - { id: 6.2.8,  title: Traçabilité des accès privilégiés,      kind: code,    check: { file: 'apps/server/src/modules/audit' } }
+      - { id: 6.2.9,  title: Réversibilité complète,                 kind: partial, note: 'Open formats, self-hosted, no proprietary lock-in. Export tooling is not written.' }
+      - { id: 6.2.10, title: Propriété des données et des clés,      kind: manual,  note: 'Contractual, not technical.' }
+
+  - id: '7'
+    title: Traçabilité, audit et non-répudiation
+    requirements:
+      - { id: '7.1',  title: Journalisation exhaustive,              kind: partial, check: { file: 'apps/server/src/modules/audit/application/audit.service.ts' } }
+      - { id: '7.2',  title: Logs infalsifiables (hash chain),       kind: code,    check: { file: 'apps/server/src/modules/audit/domain/audit-hash.ts' }, note: 'SHA-256 chain, UPDATE and DELETE refused at the database.' }
+      - { id: 7.3.1,  title: WORM / stockage immuable,               kind: partial, note: 'The table refuses UPDATE and DELETE; WORM object storage is separate.' }
+      - { id: 7.3.2,  title: Horodatage,                             kind: code,    check: { file: 'apps/server/src/modules/audit' } }
+      - { id: 7.3.3,  title: Synchronisation temporelle,             kind: manual,  note: 'NTP on the hosts.' }
+      - { id: 7.3.4,  title: Scellement cryptographique (Merkle),    kind: absent,  note: 'The chain exists; periodic Merkle root sealing does not.' }
+      - { id: 7.3.5,  title: Export d'audit,                         kind: absent }
+
+  - id: '8'
+    title: Intégrité et acidité des données
+    requirements:
+      - { id: '8.1',  title: SGBD relationnel cohérent (PostgreSQL), kind: code,    check: { pattern: 'postgres', in: 'infra/docker-compose.yml' } }
+      - { id: '8.2',  title: Transactions ACID,                      kind: code,    check: { pattern: 'runInTenantContext', in: 'apps/server/src/database/database.service.ts' } }
+      - { id: '8.3',  title: Contrôle de concurrence,                kind: code,    check: { pattern: 'FOR UPDATE|SKIP LOCKED', in: 'apps/server/src' } }
+      - { id: '8.4',  title: Contraintes d'intégrité,                kind: code,    check: { pattern: 'REFERENCES|FOREIGN KEY', in: 'apps/server/drizzle' } }
+      - { id: '8.5',  title: Journal WAL,                            kind: code,    check: { file: 'gitops/data/postgres-cluster.yaml', repo: platform, contains: 'wal_level' } }
+      - { id: '8.6',  title: Point-in-Time Recovery,                 kind: code,    check: { file: 'gitops/data/postgres-cluster.yaml', repo: platform, contains: 'barmanObjectStore' } }
+      - { id: '8.7',  title: Réplication,                            kind: code,    check: { file: 'gitops/data/postgres-cluster.yaml', repo: platform, contains: 'instances' } }
+      - { id: '8.8',  title: Réconciliation,                         kind: partial, note: 'Payment reconciliation exists; a general framework does not.' }
+      - { id: '8.9',  title: Contrôle de corruption,                 kind: manual }
+      - { id: '8.10', title: Backup vérifié,                         kind: absent,  note: 'Backups are scheduled. A restore is never tested, which means they are unverified.' }
+
+  - id: '9'
+    title: Architecture logicielle
+    requirements:
+      - { id: '9.1',  title: DDD — bounded contexts, agrégats,       kind: code,    check: { file: 'apps/server/src/modules/widgets/domain' } }
+      - { id: '9.2',  title: CQRS,                                   kind: partial, note: 'Available per module via `si scaffold --cqrs`; DDD is always on, CQRS is opt-in by design.' }
+      - { id: 9.3.1,  title: Domain events,                          kind: code,    check: { file: 'packages/events/src/index.ts' } }
+      - { id: 9.3.2,  title: Integration events,                     kind: code,    check: { file: 'packages/events/src/contract.ts' } }
+      - { id: 9.3.3,  title: Event bus,                              kind: code,    check: { file: 'apps/server/src/modules/events' } }
+      - { id: 9.3.4,  title: Event replay,                           kind: partial, note: 'Kafka retention allows it; no replay tooling is written.' }
+      - { id: 9.3.5,  title: Idempotence,                            kind: code,    check: { pattern: 'processed_events', in: 'apps/server/src' } }
+      - { id: 9.3.6,  title: Dead Letter Queue,                      kind: partial, check: { pattern: 'dlq', in: 'apps/control-plane/src', repo: platform }, note: 'The platform creates a .dlq topic per service; nothing routes to it yet.' }
+      - { id: 9.3.7,  title: Retry policies,                         kind: code,    check: { pattern: 'attempts|backoff', in: 'apps/server/src' } }
+      - { id: 9.4.6,  title: Schema Registry,                        kind: partial, note: 'Payloads are validated by zod contracts in @<brand>/events — a compile-time registry, not a Confluent one.' }
+      - { id: 9.4.7,  title: Versionnement des événements,           kind: code,    check: { pattern: 'version', in: 'packages/events/src/contract.ts' } }
+
+  - id: '10-13'
+    title: Performance, disponibilité, continuité, cache
+    requirements:
+      - { id: '10.1', title: Temps de réponse (p95/p99),             kind: absent,  note: 'No SLO is measured. k6 can assert thresholds; none are defined.' }
+      - { id: '10.2', title: Tests de charge / stress / endurance,   kind: absent,  provides: k6 }
+      - { id: '11.1', title: Pas de SPOF critique,                   kind: partial, note: 'CNPG runs 3 instances; the platform supports ONE control plane — that is a SPOF, stated.' }
+      - { id: '11.4', title: Redondance load balancer,               kind: partial, check: { file: 'gitops/edge/traefik.yaml', repo: platform } }
+      - { id: '11.7', title: Failover automatique,                   kind: code,    check: { file: 'gitops/data/postgres-cluster.yaml', repo: platform } }
+      - { id: '11.8', title: Health checks,                          kind: code,    check: { pattern: 'health', in: 'apps/server/src/app.controller.ts' } }
+      - { id: '11.9', title: Circuit breakers,                       kind: absent }
+      - { id: '11.10', title: Retry avec backoff,                    kind: code,    check: { pattern: 'backoff', in: 'apps/server/src' } }
+      - { id: '12.1', title: PCA / PRA, RPO, RTO,                    kind: manual,  note: 'RPO ≤ 15 min and RTO ≤ 1 h are contractual targets. Backups are scheduled daily — that alone does not meet a 15-minute RPO.' }
+      - { id: '12.7', title: Tests de restauration périodiques,      kind: manual }
+      - { id: '13.1', title: Cache distribué (Redis)                 , kind: code,  check: { pattern: 'redis', in: 'infra/docker-compose.yml' } }
+      - { id: '13.7', title: Protection cache stampede,              kind: absent }
+
+  - id: '14-16'
+    title: Observabilité, DevOps, interface
+    requirements:
+      - { id: '14.1', title: Logging centralisé,                     kind: absent,  provides: grafana-stack }
+      - { id: '14.2', title: Metrics,                                kind: absent,  note: 'No /metrics endpoint is exposed.' }
+      - { id: '14.3', title: Distributed tracing,                    kind: absent }
+      - { id: '14.9', title: SIEM,                                   kind: manual }
+      - { id: '14.10', title: SOC / supervision sécurité,            kind: manual }
+      - { id: '15.1', title: Conteneurisation Docker,                kind: code,    check: { file: 'infra/docker-compose.yml' } }
+      - { id: '15.2', title: Kubernetes,                             kind: code,    check: { file: 'gitops', repo: platform } }
+      - { id: '15.3', title: Infrastructure as Code,                 kind: code,    check: { file: 'gitops', repo: platform } }
+      - { id: '15.4', title: CI/CD,                                  kind: code,    check: { file: '.github/workflows/ci.yml' } }
+      - { id: '15.7', title: Argo CD,                                kind: code,    check: { pattern: 'argoproj.io', in: 'gitops', repo: platform } }
+      - { id: '15.8', title: Argo Rollouts / Blue-Green / Canary,    kind: partial, check: { pattern: 'canary', in: 'apps/control-plane/src', repo: platform }, note: 'Traffic weighting is generated; Argo Rollouts itself is not installed.' }
+      - { id: '15.11', title: Rollback automatique,                  kind: partial, note: 'Argo self-heals and prunes; automatic rollback on SLO breach is not configured.' }
+      - { id: '16.3', title: Accessibilité,                          kind: manual }

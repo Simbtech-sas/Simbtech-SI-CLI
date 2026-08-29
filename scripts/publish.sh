@@ -10,6 +10,8 @@
 #
 #   scripts/publish.sh 123456        one code, reused for all four
 #
+# Uses pnpm, not npm: only pnpm rewrites the workspace protocol on publish.
+#
 # A code lasts 30 seconds and npm accepts the same one within its window; if the
 # fourth publish fails on an expired code, re-run with a fresh one — the ones
 # that already went out are skipped.
@@ -29,15 +31,28 @@ for pkg in core tools nest si; do
   name=$(node -p "require('./packages/$pkg/package.json').name")
   version=$(node -p "require('./packages/$pkg/package.json').version")
 
-  # Already on the registry at this version? Nothing to do. Re-running after a
-  # partial failure must not error on the ones that succeeded.
-  if npm view "$name@$version" version >/dev/null 2>&1; then
+  # Attempt, then read the outcome. `npm view` as a pre-check is unreliable
+  # right after a publish — the registry takes a moment to serve the new
+  # version, and a stale 404 made this script try to republish and abort the
+  # whole run on the very package that had just succeeded.
+  #
+  # "cannot publish over the previously published versions" IS the success
+  # state for a re-run, so it is treated as one.
+  log=$(mktemp)
+  # `pnpm publish`, NOT `npm publish`. Only pnpm rewrites `workspace:*` into the
+  # real version. Publishing with npm shipped 0.1.0 with `workspace:*` in the
+  # manifest, and every install of it failed with EUNSUPPORTEDPROTOCOL.
+  if ( cd "packages/$pkg" && pnpm publish --access public --no-git-checks ) >"$log" 2>&1; then
+    echo "  + $name@$version published"
+  elif grep -q "cannot publish over" "$log"; then
     echo "  = $name@$version already published"
-    continue
+  else
+    echo "  ! $name@$version FAILED"
+    grep -vE "^npm notice" "$log" | tail -4 | sed 's/^/      /'
+    rm -f "$log"
+    exit 1
   fi
-
-  echo "  → publishing $name@$version"
-  ( cd "packages/$pkg" && npm publish "${ARGS[@]}" )
+  rm -f "$log"
 done
 
 echo

@@ -8,7 +8,10 @@ import { copyDir } from './fsx.ts';
  * local checkout instead — that is what development and CI use, so there is one
  * code path and no bundled copy to drift.
  */
-export const DEFAULT_TEMPLATE_REPO = 'SIMBTECH-SAS/boilerplates';
+// The repository this CLI is published from. `si new` fetches templates from
+// here at scaffold time, so a wrong value is not a typo — it is every user's
+// first command failing with a 404 from degit.
+export const DEFAULT_TEMPLATE_REPO = 'Simbtech-sas/Simbtech-SI-CLI';
 
 export interface FetchTemplateOptions {
   /** Git ref (tag/branch/sha). Defaults to the CLI's pinned template ref. */

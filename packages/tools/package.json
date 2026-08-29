@@ -14,7 +14,8 @@
   "files": [
     "dist",
     "registry",
-    "templates"
+    "templates",
+    "compliance"
   ],
   "license": "UNLICENSED",
   "scripts": {
@@ -32,7 +33,7 @@
     "typescript": "^5.9.2"
   },
   "publishConfig": {
-    "access": "restricted"
+    "access": "public"
   },
   "repository": {
     "type": "git",

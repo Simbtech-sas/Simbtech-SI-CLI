@@ -1,7 +1,7 @@
 {
   "name": "@simbtech/si-nest",
-  "version": "0.1.1",
-  "description": "Backend code generation for si \u2014 field specs, naming, and the generators behind `si scaffold`",
+  "version": "0.2.0",
+  "description": "Backend code generation for si — field specs, naming, and the generators behind `si scaffold`",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

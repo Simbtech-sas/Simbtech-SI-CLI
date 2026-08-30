@@ -1,7 +1,7 @@
 {
   "name": "@simbtech/si",
-  "version": "0.1.1",
-  "description": "SIMBTECH project scaffolder \u2014 multi-tenant SaaS, on-premise desktop, mobile, local-only apps, and the infra control plane",
+  "version": "0.2.0",
+  "description": "SIMBTECH project scaffolder — multi-tenant SaaS, on-premise desktop, mobile, local-only apps, and the infra control plane",
   "type": "module",
   "bin": {
     "si": "./dist/index.js"

@@ -26,14 +26,29 @@ echo "==> template smoke test"
 
 echo "==> version $VERSION"
 for p in "${PACKAGES[@]}"; do
-  (cd "packages/$p" && npm version "$VERSION" --no-git-tag-version >/dev/null)
+  # Idempotent: a publish that fails half way leaves the earlier packages already
+  # at $VERSION, and `npm version` errors rather than no-opping on a match. Being
+  # able to re-run the script is worth more than the strictness.
+  current=$(node -p "require('./packages/$p/package.json').version")
+  if [ "$current" != "$VERSION" ]; then
+    (cd "packages/$p" && npm version "$VERSION" --no-git-tag-version >/dev/null)
+  fi
   echo "  packages/$p -> $VERSION"
 done
 
 echo "==> publish"
 for p in "${PACKAGES[@]}"; do
   # pnpm rewrites workspace:* to the real version on publish; npm does not.
-  (cd "packages/$p" && pnpm publish --no-git-checks --access restricted)
+  #
+  # No --access flag: each package carries `publishConfig.access` and that is the
+  # single place it is declared. Passing `--access restricted` here overrode all
+  # four of them and failed with 402 — private packages are a paid npm plan.
+  name=$(node -p "require('./packages/$p/package.json').name")
+  if npm view "$name@$VERSION" version >/dev/null 2>&1; then
+    echo "  packages/$p already at $VERSION on the registry, skipping"
+    continue
+  fi
+  (cd "packages/$p" && pnpm publish --no-git-checks)
   echo "  published packages/$p"
 done
 

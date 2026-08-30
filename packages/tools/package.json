@@ -1,6 +1,6 @@
 {
   "name": "@simbtech/si-tools",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Registry of self-hostable open-source tools si can wire into a project",
   "type": "module",
   "main": "./dist/index.js",

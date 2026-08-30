@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { WidgetCreated, WidgetDeleted, WidgetUpdated } from '@simbkit/events';
 import { DatabaseService } from '../../../database/database.service';
+import { AuditService } from '../../audit/application/audit.service';
 import { OutboxService } from '../../events/application/outbox.service';
 import type { NewWidget, WidgetPatch } from '../domain/widget';
 import { WidgetsRepository } from '../infrastructure/widgets.repository';
@@ -22,6 +23,7 @@ export class WidgetsService {
     private readonly db: DatabaseService,
     private readonly repo: WidgetsRepository,
     private readonly outbox: OutboxService,
+    private readonly audit: AuditService,
   ) {}
 
   list() {
@@ -59,7 +61,20 @@ export class WidgetsService {
     return widget;
   }
 
+  /**
+   * Deleting is the operation worth evidence of, so it is wrapped in `around`:
+   * the intent is written on a SEPARATE connection before the work runs, and
+   * the outcome after. A delete that fails, or that someone rolls back, still
+   * leaves a record that it was attempted.
+   */
   async remove(id: string) {
+    return this.audit.around(
+      { action: 'widget.delete', targetType: 'widget', targetId: id },
+      () => this.removeInner(id),
+    );
+  }
+
+  private async removeInner(id: string) {
     const ok = await this.db.transaction(async (tx) => {
       const removed = await this.repo.remove(tx, id);
       if (removed) {

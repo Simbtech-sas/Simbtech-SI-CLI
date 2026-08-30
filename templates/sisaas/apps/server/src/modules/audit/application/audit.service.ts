@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { asc, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, lt, sql } from 'drizzle-orm';
 import { DatabaseService, type TenantTx } from '../../../database/database.service';
 import { auditLog } from '../../../database/schema';
 import { type AuditEntryCore, type AuditPhase, computeAuditHash } from '../domain/audit-hash';
@@ -154,6 +154,44 @@ export class AuditService {
     const tenantId: string | null = null; // si:when single-tenant
     await this.append(tx, tenantId, event, 'event', null);
   }
+
+  // ── reading ─────────────────────────────────────────────────────────────────
+
+  /**
+   * The most recent entries, newest first.
+   *
+   * Paged by `seq`, which is the only correct order to read this table in: it
+   * is the chain's own order, and sorting by `created_at` puts two entries
+   * written in the same millisecond in an order the hashes disagree with.
+   */
+  // si:when-begin multi-tenant
+  async recent(tenantId: string, limit = 50, before?: number): Promise<AuditRow[]> {
+    return this.database.runInTenantContext(tenantId, async (tx) =>
+      tx
+        .select()
+        .from(auditLog)
+        .where(
+          before === undefined
+            ? eq(auditLog.tenantId, tenantId)
+            : and(eq(auditLog.tenantId, tenantId), lt(auditLog.seq, before)),
+        )
+        .orderBy(desc(auditLog.seq))
+        .limit(Math.min(limit, 200)),
+    );
+  }
+  // si:when-end
+  // si:when-begin single-tenant
+  async recent(limit = 50, before?: number): Promise<AuditRow[]> {
+    return this.database.transaction(async (tx) =>
+      tx
+        .select()
+        .from(auditLog)
+        .where(before === undefined ? undefined : lt(auditLog.seq, before))
+        .orderBy(desc(auditLog.seq))
+        .limit(Math.min(limit, 200)),
+    );
+  }
+  // si:when-end
 
   // ── verification ────────────────────────────────────────────────────────────
 

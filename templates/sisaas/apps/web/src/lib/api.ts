@@ -211,3 +211,66 @@ export const updateWidget = (id: string, patch: Partial<WidgetInput>) =>
 
 export const deleteWidget = (id: string) =>
   apiFetch<void>(`/widgets/${id}`, { method: 'DELETE' });
+
+// ── Audit log ───────────────────────────────────────────────────────────────
+
+export interface AuditEntry {
+  seq: number;
+  id: string;
+  actorUserId: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  phase: 'intent' | 'committed' | 'failed' | 'event';
+  correlationId: string | null;
+  hash: string;
+  createdAt: string;
+}
+
+export interface ChainVerification {
+  ok: boolean;
+  count: number;
+  brokenAtSeq?: number;
+  reason?: string;
+}
+
+/** `before` is a cursor on `seq`, not an offset — the table only grows at the head. */
+export const listAudit = (before?: number) =>
+  apiFetch<AuditEntry[]>(`/audit${before ? `?before=${before}` : ''}`);
+
+export const verifyAudit = () => apiFetch<ChainVerification>('/audit/verify');
+
+// ── Media ───────────────────────────────────────────────────────────────────
+
+export type UploadContentType = 'image/jpeg' | 'image/png' | 'image/webp';
+
+export interface PresignedUpload {
+  key: string;
+  uploadUrl: string;
+  publicUrl: string;
+}
+
+export const createUpload = (contentType: UploadContentType) =>
+  apiFetch<PresignedUpload>('/media/uploads', {
+    method: 'POST',
+    body: JSON.stringify({ contentType }),
+  });
+
+/**
+ * Upload straight to storage, not through the API.
+ *
+ * That is the whole point of a presigned URL: the bytes never touch the API,
+ * so a 200MB upload does not occupy a Node process for its duration. Note the
+ * bare `fetch` — `apiFetch` would attach our bearer token to a third-party
+ * host, which is how a credential ends up in someone else's access log.
+ */
+export async function uploadFile(file: File): Promise<PresignedUpload> {
+  const presigned = await createUpload(file.type as UploadContentType);
+  const res = await fetch(presigned.uploadUrl, {
+    method: 'PUT',
+    body: file,
+    headers: { 'Content-Type': file.type },
+  });
+  if (!res.ok) throw new ApiError(res.status, 'The upload was rejected by storage.');
+  return presigned;
+}

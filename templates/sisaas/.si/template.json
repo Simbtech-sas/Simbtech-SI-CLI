@@ -259,7 +259,8 @@
           "description": "No file storage. The media module is removed.",
           "features": [],
           "remove": [
-            "apps/server/src/modules/media"
+            "apps/server/src/modules/media",
+            "apps/web/src/app/(dashboard)/dashboard/media"
           ]
         }
       ]

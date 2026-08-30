@@ -16,6 +16,8 @@ import { SessionProvider } from '@/lib/session';
 const NAV = [
   { href: '/dashboard', label: 'Overview' },
   { href: '/dashboard/widgets', label: 'Widgets' },
+  { href: '/dashboard/media', label: 'Media' }, // si:when storage-s3
+  { href: '/dashboard/audit', label: 'Audit' },
   { href: '/dashboard/settings', label: 'Settings' },
 ];
 

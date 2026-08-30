@@ -5,13 +5,17 @@
   "type": "module",
   "description": "Simbkit infrastructure control plane",
   "scripts": {
-    "build": "npm --prefix apps/control-plane run build",
-    "typecheck": "npm --prefix apps/control-plane run typecheck",
-    "test": "npm --prefix apps/control-plane test",
+    "dev": "npm --workspace @simbkit/web run dev",
+    "build": "npm --workspace @simbkit/control-plane run build && npm --workspace @simbkit/web run build",
+    "typecheck": "npm --workspace @simbkit/control-plane run typecheck && npm --workspace @simbkit/web run typecheck",
+    "test": "npm --workspace @simbkit/control-plane test",
     "node:add": "node apps/control-plane/src/main.ts node add",
     "node:list": "node apps/control-plane/src/main.ts node list",
     "service:add": "node apps/control-plane/src/main.ts service add",
     "verify": "bash scripts/verify.sh",
     "verify:security": "bash scripts/verify-security.sh"
-  }
+  },
+  "workspaces": [
+    "apps/*"
+  ]
 }

@@ -2,39 +2,19 @@
 /**
  * The control plane, as a CLI.
  *
- * A web UI is the obvious next step and every operation below is already a pure
- * function over `state.json` — but the CLI is what makes the operations testable
- * and scriptable, and a form that calls an untested function is worse than no
- * form. Add the HTTP layer on top of these, not beside them.
+ * The web UI in `apps/web` drives the same functions this file does — the
+ * operations live in `cluster/` and `services/`, the state in `state.ts`, and
+ * both front ends are thin. Add an operation there, not here, and both get it.
+ *
+ * The CLI is what makes them testable and scriptable, and it is the one that
+ * works over SSH on a box with no browser.
  */
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-import { addNode, disruptionWarning, renderInventory, DEFAULT_SETTINGS, type ClusterNode, type ClusterSettings } from './cluster/inventory.ts';
+import { addNode, disruptionWarning, type ClusterNode } from './cluster/inventory.ts';
+import { loadState, saveState, REPO } from './state.ts';
 import { generateService, generateToolService, generateLoadBalancing, type LoadBalancing } from './services/generate.ts';
-
-const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
-const STATE = path.join(REPO, 'cluster', 'state.json');
-
-interface State {
-  settings: ClusterSettings;
-  nodes: ClusterNode[];
-}
-
-async function loadState(): Promise<State> {
-  try {
-    return JSON.parse(await readFile(STATE, 'utf8')) as State;
-  } catch {
-    return { settings: DEFAULT_SETTINGS, nodes: [] };
-  }
-}
-
-async function saveState(state: State): Promise<void> {
-  await mkdir(path.dirname(STATE), { recursive: true });
-  await writeFile(STATE, JSON.stringify(state, null, 2) + '\n', 'utf8');
-  await writeFile(path.join(REPO, 'cluster', 'inventory.env'), renderInventory(state.nodes, state.settings), 'utf8');
-}
 
 /**
  * Read a tool's deployment facts from the si registry.

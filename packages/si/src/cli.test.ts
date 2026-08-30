@@ -452,3 +452,50 @@ test('every flavor offers tools, or is on the list of ones that cannot', async (
   assert.deepEqual(alias, base, 'SiAPP and SiSAAS are one shape and must offer one list');
 });
 
+
+test('every flavor ships a user interface', async () => {
+  // The gap this closes: `platform` scaffolded a CLI and nothing else, so
+  // "add a VPS" meant reading a runbook. Nothing caught it because a flavor
+  // with no UI still scaffolds, still builds and still passes the smoke test.
+  //
+  // What is counted is files that RENDER something, not files in a directory
+  // called `ui` — SiCAL is a whole notes app in two components, and a count of
+  // files would have called that a failure while a directory of empty stubs
+  // passed.
+  const { readdir, readFile } = await import('node:fs/promises');
+  const root = new URL('../../../templates/', import.meta.url);
+
+  // A component, in each flavor's own idiom.
+  const RENDERS: Record<string, { file: RegExp; markup: RegExp }> = {
+    sisaas: { file: /\.tsx$/, markup: /<[A-Za-z]/ },
+    simice: { file: /\.tsx$/, markup: /<[A-Za-z]/ },
+    'sibile-rn': { file: /\.tsx$/, markup: /<[A-Za-z]/ },
+    'sibile-flutter': { file: /\.dart$/, markup: /Widget build\(/ },
+    'sibile-capacitor': { file: /\.tsx$/, markup: /<[A-Za-z]/ },
+    sical: { file: /\.tsx$/, markup: /<[A-Za-z]/ },
+    platform: { file: /\.tsx$/, markup: /<[A-Za-z]/ },
+  };
+
+  const count = async (dir: URL, spec: { file: RegExp; markup: RegExp }): Promise<number> => {
+    let found = 0;
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue;
+      if (entry.isDirectory()) {
+        found += await count(new URL(`${entry.name}/`, dir), spec);
+      } else if (spec.file.test(entry.name)) {
+        const text = await readFile(new URL(entry.name, dir), 'utf8');
+        if (spec.markup.test(text)) found++;
+      }
+    }
+    return found;
+  };
+
+  for (const [flavor, spec] of Object.entries(RENDERS)) {
+    const found = await count(new URL(`${flavor}/`, root), spec);
+    assert.ok(
+      found >= 2,
+      `${flavor} ships ${found} component(s) that render markup — a flavor a user ` +
+        'picks should come with something to look at, not just an API',
+    );
+  }
+});

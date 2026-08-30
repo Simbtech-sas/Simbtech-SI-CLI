@@ -1,19 +1,39 @@
 {
   "id": "platform",
   "label": "Platform",
-  "summary": "Infra control plane — k3s over WireGuard, ArgoCD, VPS and service onboarding",
-  "brandToken": { "lower": "simbkit", "capital": "Simbkit", "upper": "SIMBKIT" },
-  "packageManager": "npm",
-  "toolCategories": ["observability", "auth", "storage", "queue", "search", "finance", "realtime", "ai"],
-  "anchors": {
-    "modules": { "file": "apps/control-plane/src/main.ts", "marker": "// si:modules" }
+  "summary": "Infra control plane \u2014 k3s over WireGuard, ArgoCD, VPS and service onboarding",
+  "brandToken": {
+    "lower": "simbkit",
+    "capital": "Simbkit",
+    "upper": "SIMBKIT"
   },
-  "targets": { "gitops": "gitops", "cluster": "cluster", "server": "apps/control-plane" },
+  "packageManager": "npm",
+  "toolCategories": [
+    "observability",
+    "auth",
+    "storage",
+    "queue",
+    "search",
+    "finance",
+    "realtime",
+    "ai"
+  ],
+  "anchors": {
+    "modules": {
+      "file": "apps/control-plane/src/main.ts",
+      "marker": "// si:modules"
+    }
+  },
+  "targets": {
+    "gitops": "gitops",
+    "cluster": "cluster",
+    "server": "apps/control-plane"
+  },
   "nextSteps": [
     "git init && git add -A && git commit -m 'initial commit'",
-    "npm --prefix apps/control-plane install",
-    "npm run verify",
-    "npm run node:add -- --ip <your-first-vps>",
+    "npm install",
+    "npm run dev                        # the control plane, on :3100",
+    "npm run node:add -- --ip <vps>     # or add it in the UI",
     "./cluster/bootstrap-network.sh && ./cluster/bootstrap-k3s.sh"
   ]
 }

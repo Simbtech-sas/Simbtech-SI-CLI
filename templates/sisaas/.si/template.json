@@ -70,10 +70,7 @@
   "nextSteps": [
     "git init && git add -A && git commit -m 'initial commit'",
     "pnpm install",
-    "cp apps/server/.env.example apps/server/.env",
-    "pnpm infra:up",
-    "pnpm --filter @{{brand}}/server db:migrate",
-    "pnpm dev"
+    "si start dev     # everything. Or: npx @simbtech/si start dev"
   ],
   "defaultProfile": "mono",
   "profiles": {

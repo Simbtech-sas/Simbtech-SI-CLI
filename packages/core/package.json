@@ -1,6 +1,6 @@
 {
   "name": "@simbtech/si-core",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Shared primitives for the si CLI: template fetch, brand substitution, package-manager detection, anchor insertion",
   "type": "module",
   "main": "./dist/index.js",

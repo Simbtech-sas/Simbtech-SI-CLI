@@ -1,6 +1,6 @@
 {
   "name": "@simbtech/si",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "SIMBTECH project scaffolder — multi-tenant SaaS, on-premise desktop, mobile, local-only apps, and the infra control plane",
   "type": "module",
   "bin": {

@@ -36,8 +36,12 @@ export class PaymentReconcileHandlers implements OnModuleInit {
   ) {}
 
   /** Derived from the reference, so a redelivered event finds the run already going. */
-  private idFor(tenantId: string | null, reference: string): string {
-    return TemporalClient.workflowId(tenantId, 'payment', reference);
+{{#if multiTenant}}  private idFor(tenantId: string | null, reference: string): string {
+{{else}}  private idFor(reference: string): string {
+{{/if}}
+{{#if multiTenant}}    return TemporalClient.workflowId(tenantId, 'payment', reference);
+{{else}}    return TemporalClient.workflowId('payment', reference);
+{{/if}}
   }
 
   onModuleInit(): void {
@@ -53,15 +57,20 @@ export class PaymentReconcileHandlers implements OnModuleInit {
       }) as never,
     );
 
-    this.registry.on(PaymentRequested, 'await-settlement', async ({ payload, tenantId }) => {
+{{#if multiTenant}}    this.registry.on(PaymentRequested, 'await-settlement', async ({ payload, tenantId }) => {
+{{else}}    this.registry.on(PaymentRequested, 'await-settlement', async ({ payload }) => {
+{{/if}}
       const { started } = await this.temporal.startIdempotent(AWAIT_PAYMENT, {
-        workflowId: this.idFor(tenantId, payload.reference),
+{{#if multiTenant}}        workflowId: this.idFor(tenantId, payload.reference),
+{{else}}        workflowId: this.idFor(payload.reference),
+{{/if}}
         args: [
           {
             provider: payload.provider,
             reference: payload.reference,
             externalId: payload.externalId,
-            tenantId: tenantId ?? '',
+{{#if multiTenant}}            tenantId: tenantId ?? '',
+{{/if}}
             amount: payload.amount,
             currency: payload.currency,
           },
@@ -72,12 +81,16 @@ export class PaymentReconcileHandlers implements OnModuleInit {
 
     // The webhook arrived. Wake the workflow so it stops before polling.
     const resolve = (state: 'settled' | 'failed' | 'cancelled') =>
-      async ({ payload, tenantId }: { payload: { reference: string }; tenantId: string | null }) => {
+{{#if multiTenant}}      async ({ payload, tenantId }: { payload: { reference: string }; tenantId: string | null }) => {
+{{else}}      async ({ payload }: { payload: { reference: string } }) => {
+{{/if}}
         // A signal for a workflow that already finished is ordinary — a
         // reconciliation poll got there first — and returns false rather than
         // throwing, or the event would redeliver forever.
         await this.temporal.signal(
-          this.idFor(tenantId, payload.reference),
+{{#if multiTenant}}          this.idFor(tenantId, payload.reference),
+{{else}}          this.idFor(payload.reference),
+{{/if}}
           PAYMENT_RESOLVED_SIGNAL,
           state,
         );

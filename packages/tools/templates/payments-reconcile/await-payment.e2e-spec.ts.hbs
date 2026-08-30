@@ -12,7 +12,8 @@ jest.setTimeout(120_000);
 const payment = {
   provider: 'kpay',
   reference: 'KPAY-TEST-1',
-  tenantId: '11111111-1111-1111-1111-111111111111',
+{{#if multiTenant}}  tenantId: '11111111-1111-1111-1111-111111111111',
+{{/if}}
   amount: '15000',
   currency: 'XAF',
 };

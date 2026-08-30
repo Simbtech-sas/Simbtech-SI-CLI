@@ -1,7 +1,7 @@
 import { boolean, index, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { tenants } from './tenants';
-
+{{#if multiTenant}}import { tenants } from './tenants';
+{{/if}}
 export const kpayStatus = pgEnum('kpay_status', [
   'PENDING',
   'PROCESSING',
@@ -24,10 +24,10 @@ export const kpayPayments = pgTable(
   'kpay_payments',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-    tenantId: uuid('tenant_id')
+{{#if multiTenant}}    tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    kind: kpayKind('kind').notNull().default('payment'),
+{{/if}}    kind: kpayKind('kind').notNull().default('payment'),
     /** KPay's id. Unique — this is what makes redelivery a no-op. */
     kpayPaymentId: text('kpay_payment_id').notNull().unique(),
     reference: text('reference').notNull(),
@@ -53,8 +53,10 @@ export const kpayPayments = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    unique('kpay_tenant_external').on(t.tenantId, t.externalId),
+{{#if multiTenant}}    unique('kpay_tenant_external').on(t.tenantId, t.externalId),
     index('kpay_payments_tenant_idx').on(t.tenantId, t.createdAt),
-    index('kpay_payments_reference_idx').on(t.reference),
+{{else}}    unique('kpay_external').on(t.externalId),
+    index('kpay_payments_created_idx').on(t.createdAt),
+{{/if}}    index('kpay_payments_reference_idx').on(t.reference),
   ],
 );

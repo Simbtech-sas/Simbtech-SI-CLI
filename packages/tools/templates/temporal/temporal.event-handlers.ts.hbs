@@ -1,19 +1,30 @@
 import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
-import { TenantProvisioned } from '@{{brand}}/events';
+{{#if multiTenant}}import { TenantProvisioned } from '@{{brand}}/events';
+{{else}}import { UserRegistered } from '@{{brand}}/events';
+{{/if}}
 import { EventRegistry } from '../../events/application/event-registry.service';
 import { TemporalClient } from './temporal.client';
-import { EMAIL_VERIFIED_SIGNAL, TENANT_ONBOARDING } from '../domain/workflow-signals';
+{{#if multiTenant}}import { EMAIL_VERIFIED_SIGNAL, TENANT_ONBOARDING } from '../domain/workflow-signals';
+{{else}}import { EMAIL_VERIFIED_SIGNAL, USER_ONBOARDING } from '../domain/workflow-signals';
+{{/if}}
 
 /**
  * The Kafka → Temporal seam.
  *
  * An event does not DO the work; it starts or advances the process that does.
- * That split is the whole point of having both: the event says "a tenant
+{{#if multiTenant}} * That split is the whole point of having both: the event says "a tenant
  * exists", and the workflow owns the seven days of waiting that follow.
  *
  * The workflow id is derived from the tenant, never generated, so an
  * at-least-once event redelivered an hour later finds the run already going
  * instead of starting a second one.
+{{else}} * That split is the whole point of having both: the event says "a user
+ * signed up", and the workflow owns the seven days of waiting that follow.
+ *
+ * The workflow id is derived from the user, never generated, so an
+ * at-least-once event redelivered an hour later finds the run already going
+ * instead of starting a second one.
+{{/if}}
  */
 @Injectable()
 export class TemporalEventHandlers implements OnModuleInit {
@@ -25,7 +36,7 @@ export class TemporalEventHandlers implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
-    this.registry.on(TenantProvisioned, 'start-onboarding', async ({ payload }) => {
+{{#if multiTenant}}    this.registry.on(TenantProvisioned, 'start-onboarding', async ({ payload }) => {
       const workflowId = TemporalClient.workflowId(payload.tenantId, 'onboarding', payload.tenantId);
       const { started } = await this.temporal.startIdempotent(TENANT_ONBOARDING, {
         workflowId,
@@ -33,6 +44,15 @@ export class TemporalEventHandlers implements OnModuleInit {
       });
       if (started) this.log.log(`onboarding started for ${payload.slug}`);
     });
+{{else}}    this.registry.on(UserRegistered, 'start-onboarding', async ({ payload }) => {
+      const workflowId = TemporalClient.workflowId('onboarding', payload.userId);
+      const { started } = await this.temporal.startIdempotent(USER_ONBOARDING, {
+        workflowId,
+        args: [{ userId: payload.userId, email: payload.email }],
+      });
+      if (started) this.log.log(`onboarding started for ${payload.email}`);
+    });
+{{/if}}
   }
 
   /**
@@ -42,10 +62,17 @@ export class TemporalEventHandlers implements OnModuleInit {
    * has already finished is ordinary — the customer clicked a minute after the
    * timer expired — so this returns false rather than throwing.
    */
-  async confirmEmailVerified(tenantId: string): Promise<boolean> {
+{{#if multiTenant}}  async confirmEmailVerified(tenantId: string): Promise<boolean> {
     return this.temporal.signal(
       TemporalClient.workflowId(tenantId, 'onboarding', tenantId),
       EMAIL_VERIFIED_SIGNAL,
     );
   }
+{{else}}  async confirmEmailVerified(userId: string): Promise<boolean> {
+    return this.temporal.signal(
+      TemporalClient.workflowId('onboarding', userId),
+      EMAIL_VERIFIED_SIGNAL,
+    );
+  }
+{{/if}}
 }

@@ -40,16 +40,16 @@ files:
     dest: src/modules/temporal/application/temporal-worker.service.ts
   - src: temporal.event-handlers.ts.hbs
     dest: src/modules/temporal/application/temporal.event-handlers.ts
-  - src: tenant-onboarding.workflow.ts.hbs
-    dest: src/modules/temporal/workflows/tenant-onboarding.workflow.ts
+  - src: onboarding.workflow.ts.hbs
+    dest: src/modules/temporal/workflows/onboarding.workflow.ts
   - src: workflows-index.ts.hbs
     dest: src/modules/temporal/workflows/index.ts
   - src: activity-registry.service.ts.hbs
     dest: src/modules/temporal/application/activity-registry.service.ts
   - src: temporal.module.ts.hbs
     dest: src/modules/temporal/temporal.module.ts
-  - src: tenant-onboarding.e2e-spec.ts.hbs
-    dest: test/e2e/tenant-onboarding.e2e-spec.ts
+  - src: onboarding.e2e-spec.ts.hbs
+    dest: test/e2e/onboarding.e2e-spec.ts
 
 register:
   - anchor: events

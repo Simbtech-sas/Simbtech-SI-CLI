@@ -32,6 +32,30 @@ export interface AddOptions {
   path?: string;
   /** Suppress per-tool output — `si new` reports the whole set at once. */
   quiet?: boolean;
+  /**
+   * Whether the project has tenants. `si new` knows before `.si/project.json`
+   * exists and passes it; `si add` reads it back off the record.
+   */
+  multiTenant?: boolean;
+}
+
+/**
+ * Does this project have tenants?
+ *
+ * Defaults to TRUE when there is no record — a project scaffolded before
+ * `project.json` carried the choice is a SiSAAS one, and every tool template was
+ * written for it. Guessing single-tenant would strip a tenant column out of a
+ * project that has one.
+ */
+async function isMultiTenant(root: string): Promise<boolean> {
+  try {
+    const record = JSON.parse(
+      await readFile(path.join(root, '.si', 'project.json'), 'utf8'),
+    ) as { choices?: Record<string, string> };
+    return record.choices?.['tenancy'] !== 'single';
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -92,6 +116,7 @@ export async function addTools(ids: string[], options: AddOptions): Promise<Pend
 
   if (!options.skipInstall) await ensureInstalled(project.root, options.dryRun ?? false);
 
+  const multiTenant = options.multiTenant ?? (await isMultiTenant(project.root));
   const pending: PendingDeps = { server: [], web: [], dev: [] };
 
   for (const tool of tools) {
@@ -106,6 +131,7 @@ export async function addTools(ids: string[], options: AddOptions): Promise<Pend
       brand: project.brand,
       dryRun: options.dryRun,
       skipInstall: options.skipInstall,
+      multiTenant,
     });
 
     if (r.pending) {

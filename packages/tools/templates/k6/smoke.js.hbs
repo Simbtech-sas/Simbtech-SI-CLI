@@ -30,7 +30,9 @@ export const options = {
 export function setup() {
   if (!EMAIL || !PASSWORD) {
     // Testing only unauthenticated routes measures the wrong thing: every real
-    // query runs inside a tenant context, and RLS adds a filter to each one.
+{{#if multiTenant}}    // query runs inside a tenant context, and RLS adds a filter to each one.
+{{else}}    // query runs behind a guard, and the guarded path is the one under load.
+{{/if}}
     throw new Error('set K6_EMAIL and K6_PASSWORD — an unauthenticated load test is not representative');
   }
   const res = http.post(`${BASE}/auth/login`, JSON.stringify({ email: EMAIL, password: PASSWORD }), {

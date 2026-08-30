@@ -74,7 +74,7 @@ export class BillingEventHandlers implements OnModuleInit {
         template: 'trial-ending',
         data: {
           name: null,
-          tenantName: payload.tenantName,
+          accountName: payload.accountName,
           planName: payload.planName,
           amount: payload.amount,
           currency: payload.currency,
@@ -90,7 +90,7 @@ export class BillingEventHandlers implements OnModuleInit {
         template: 'payment-requested',
         data: {
           name: null,
-          tenantName: payload.tenantName,
+          accountName: payload.accountName,
           planName: payload.planName,
           amount: payload.amount,
           currency: payload.currency,
@@ -110,7 +110,7 @@ export class BillingEventHandlers implements OnModuleInit {
         template: 'payment-failed',
         data: {
           name: null,
-          tenantName: payload.tenantName,
+          accountName: payload.accountName,
           planName: payload.planName,
           amount: payload.amount,
           currency: payload.currency,
@@ -129,7 +129,7 @@ export class BillingEventHandlers implements OnModuleInit {
         template: 'subscription-suspended',
         data: {
           name: null,
-          tenantName: payload.tenantName,
+          accountName: payload.accountName,
           planName: payload.planName,
           amount: payload.amount,
           currency: payload.currency,
@@ -151,7 +151,7 @@ export class BillingEventHandlers implements OnModuleInit {
           template: 'invoice',
           data: {
             name: null,
-            tenantName: payload.tenantName,
+            accountName: payload.accountName,
             planName: payload.planName,
             amount: payload.amount,
             currency: payload.currency,
@@ -175,7 +175,7 @@ export class BillingEventHandlers implements OnModuleInit {
           template: 'receipt',
           data: {
             name: null,
-            tenantName: payload.tenantName,
+            accountName: payload.accountName,
             number: payload.number,
             amount: payload.amount,
             currency: payload.currency,
@@ -195,7 +195,7 @@ export class BillingEventHandlers implements OnModuleInit {
 
   private document(
     kind: 'invoice' | 'receipt',
-    payload: { number: string; planName: string; amount: string; currency: string; tenantName: string; billingEmail: string | null },
+    payload: { number: string; planName: string; amount: string; currency: string; accountName: string; billingEmail: string | null },
     issuedAt: Date,
     dueAt?: Date,
   ): InvoiceDocument {
@@ -207,7 +207,7 @@ export class BillingEventHandlers implements OnModuleInit {
       dueAt,
       currency: payload.currency,
       from: { name: seller.name, address: seller.address, taxId: seller.taxId, email: seller.email },
-      to: { name: payload.tenantName, email: payload.billingEmail ?? undefined },
+      to: { name: payload.accountName, email: payload.billingEmail ?? undefined },
       lines: [{ description: payload.planName, unitAmount: payload.amount }],
       // Unset means no tax line is printed at all — better than printing 0% and
       // implying a rate was considered.

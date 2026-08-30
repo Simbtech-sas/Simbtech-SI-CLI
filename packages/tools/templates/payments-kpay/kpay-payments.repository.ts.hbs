@@ -61,26 +61,34 @@ export class KpayPaymentsRepository implements OnModuleInit {
             inArray(kpayPayments.status, ['PENDING', 'PROCESSING']),
           ),
         )
-        .returning({ id: kpayPayments.id, tenantId: kpayPayments.tenantId });
+{{#if multiTenant}}        .returning({ id: kpayPayments.id, tenantId: kpayPayments.tenantId });
+{{else}}        .returning({ id: kpayPayments.id });
+{{/if}}
 
       const row = updated[0];
       if (!row) return false;
-      await this.publisher.publish(tx, event, row.tenantId);
+{{#if multiTenant}}      await this.publisher.publish(tx, event, row.tenantId);
+{{else}}      await this.publisher.publish(tx, event);
+{{/if}}
       return true;
     });
   }
 
   /** Record a payment we just started, in the caller's transaction. */
   async record(
-    tenantId: string,
+{{#if multiTenant}}    tenantId: string,
+{{/if}}
     response: KpayPaymentResponse,
     detail: { method: string; mode: string; amount: string },
   ): Promise<void> {
-    await this.database.runInTenantContext(tenantId, async (tx) => {
+{{#if multiTenant}}    await this.database.runInTenantContext(tenantId, async (tx) => {
+{{else}}    await this.database.transaction(async (tx) => {
+{{/if}}
       const inserted = await tx
         .insert(kpayPayments)
         .values({
-          tenantId,
+{{#if multiTenant}}          tenantId,
+{{/if}}
           kpayPaymentId: response.id,
           reference: response.reference,
           providerReference: response.providerReference ?? null,
@@ -113,7 +121,8 @@ export class KpayPaymentsRepository implements OnModuleInit {
           currency: response.currency,
           paymentUrl: response.gatewayUrl,
         },
-        tenantId,
+{{#if multiTenant}}        tenantId,
+{{/if}}
       );
     });
   }
@@ -125,9 +134,13 @@ export class KpayPaymentsRepository implements OnModuleInit {
    * status column itself: once a payment is terminal it never moves again, so a
    * redelivery updates nothing.
    *
-   * Runs on the ADMIN connection: a webhook arrives with no tenant context — KPay
+{{#if multiTenant}}   * Runs on the ADMIN connection: a webhook arrives with no tenant context — KPay
    * knows nothing about our tenants — so the row is located by KPay's own id and
    * the tenant is read from it.
+{{else}}   * Located by KPay's own payment id. Nothing in the payload decides which row
+   * moves — a webhook is attacker-reachable, and the id is the only field of it
+   * we trust, because we sent it.
+{{/if}}
    */
   async applyTerminalStatus(event: KpayWebhookEvent): Promise<boolean> {
     return this.database.requireAdminDb().transaction(async (tx) => {
@@ -147,10 +160,12 @@ export class KpayPaymentsRepository implements OnModuleInit {
             inArray(kpayPayments.status, ['PENDING', 'PROCESSING']),
           ),
         )
-        // The tenant comes from OUR row, never from the payload: KPay knows
+{{#if multiTenant}}        // The tenant comes from OUR row, never from the payload: KPay knows
         // nothing about our tenants, so anything tenant-shaped in a webhook is
         // attacker-controlled.
-        .returning({ id: kpayPayments.id, tenantId: kpayPayments.tenantId, currency: kpayPayments.currency });
+{{/if}}{{#if multiTenant}}        .returning({ id: kpayPayments.id, tenantId: kpayPayments.tenantId, currency: kpayPayments.currency });
+{{else}}        .returning({ id: kpayPayments.id, currency: kpayPayments.currency });
+{{/if}}
 
       const row = updated[0];
       if (!row) return false;
@@ -169,7 +184,8 @@ export class KpayPaymentsRepository implements OnModuleInit {
           failureReason: event.failureReason ?? null,
           occurredAt: event.completedAt ?? event.timestamp,
         },
-        row.tenantId,
+{{#if multiTenant}}        row.tenantId,
+{{/if}}
       );
       return true;
     });
@@ -185,8 +201,12 @@ export class KpayPaymentsRepository implements OnModuleInit {
     return row;
   }
 
-  async findByExternalId(tenantId: string, externalId: string) {
-    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{#if multiTenant}}  async findByExternalId(tenantId: string, externalId: string) {
+{{else}}  async findByExternalId(externalId: string) {
+{{/if}}
+{{#if multiTenant}}    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{else}}    return this.database.transaction(async (tx) => {
+{{/if}}
       const [row] = await tx
         .select()
         .from(kpayPayments)

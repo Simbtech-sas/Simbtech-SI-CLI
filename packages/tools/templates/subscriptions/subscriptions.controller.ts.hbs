@@ -22,17 +22,25 @@ class SubscribeDto extends createZodDto(
 export class SubscriptionsController {
   constructor(private readonly subs: SubscriptionsService) {}
 
-  /** The tenant's own subscription. Tenant id from the token, never the body. */
+{{#if multiTenant}}  /** The tenant's own subscription. Tenant id from the token, never the body. */
+{{else}}  /** The caller's own subscription. User id from the token, never the body. */
+{{/if}}
   @Get('subscription')
   current(@CurrentPrincipal() p: AccessTokenPayload) {
-    return this.subs.current(p.tenantId);
+{{#if multiTenant}}    return this.subs.current(p.tenantId);
+{{else}}    return this.subs.current(p.sub);
+{{/if}}
   }
 
-  /** Only an owner changes what the tenant pays. */
+{{#if multiTenant}}  /** Only an owner changes what the tenant pays. */
+{{else}}  /** Only an owner changes what is paid. */
+{{/if}}
   @Post('subscribe')
   @Roles('owner')
   subscribe(@CurrentPrincipal() p: AccessTokenPayload, @Body() dto: SubscribeDto) {
-    return this.subs.start({ tenantId: p.tenantId, ...dto });
+{{#if multiTenant}}    return this.subs.start({ tenantId: p.tenantId, ...dto });
+{{else}}    return this.subs.start({ userId: p.sub, ...dto });
+{{/if}}
   }
 
   /**
@@ -42,6 +50,8 @@ export class SubscriptionsController {
   @Post('cancel')
   @Roles('owner')
   cancel(@CurrentPrincipal() p: AccessTokenPayload) {
-    return this.subs.cancel(p.tenantId, false);
+{{#if multiTenant}}    return this.subs.cancel(p.tenantId, false);
+{{else}}    return this.subs.cancel(p.sub, false);
+{{/if}}
   }
 }

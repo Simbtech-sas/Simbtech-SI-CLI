@@ -1,8 +1,9 @@
 import { TemporalClient } from '../application/temporal.client';
-import { EMAIL_VERIFIED_SIGNAL, TENANT_ONBOARDING } from './workflow-signals';
-
+{{#if multiTenant}}import { EMAIL_VERIFIED_SIGNAL, TENANT_ONBOARDING } from './workflow-signals';
+{{else}}import { EMAIL_VERIFIED_SIGNAL, USER_ONBOARDING } from './workflow-signals';
+{{/if}}
 describe('workflow ids', () => {
-  it('derives an id from the tenant rather than generating one', () => {
+{{#if multiTenant}}  it('derives an id from the tenant rather than generating one', () => {
     // The id IS the idempotency key. Kafka WILL deliver the same event twice;
     // a generated id would start a second onboarding — two welcome emails and
     // two seven-day timers for one tenant.
@@ -23,6 +24,29 @@ describe('workflow ids', () => {
   it('has a home for platform-level workflows that belong to no tenant', () => {
     expect(TemporalClient.workflowId(null, 'reconcile', 'nightly')).toBe('platform:reconcile:nightly');
   });
+{{else}}  it('derives an id from the subject rather than generating one', () => {
+    // The id IS the idempotency key. Kafka WILL deliver the same event twice;
+    // a generated id would start a second onboarding — two welcome emails and
+    // two seven-day timers for one person.
+    const a = TemporalClient.workflowId('onboarding', 'user-1');
+    const b = TemporalClient.workflowId('onboarding', 'user-1');
+    expect(a).toBe(b);
+  });
+
+  it('keeps two subjects apart', () => {
+    const a = TemporalClient.workflowId('onboarding', 'user-1');
+    const b = TemporalClient.workflowId('onboarding', 'user-2');
+    expect(a).not.toBe(b);
+  });
+
+  it('keeps two workflows for one subject apart', () => {
+    // Onboarding and a payment for the same person are different runs, and the
+    // workflow segment is the only thing keeping them from colliding.
+    const a = TemporalClient.workflowId('onboarding', 'user-1');
+    const b = TemporalClient.workflowId('payment', 'user-1');
+    expect(a).not.toBe(b);
+  });
+{{/if}}
 });
 
 describe('signal names', () => {
@@ -30,6 +54,8 @@ describe('signal names', () => {
     // Importing the workflow file to reach the signal would evaluate
     // proxyActivities outside a workflow context, which fails obscurely.
     expect(EMAIL_VERIFIED_SIGNAL).toBe('emailVerified');
-    expect(TENANT_ONBOARDING).toBe('tenantOnboarding');
+{{#if multiTenant}}    expect(TENANT_ONBOARDING).toBe('tenantOnboarding');
+{{else}}    expect(USER_ONBOARDING).toBe('userOnboarding');
+{{/if}}
   });
 });

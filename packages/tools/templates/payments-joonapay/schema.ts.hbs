@@ -1,7 +1,7 @@
 import { boolean, index, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { tenants } from './tenants';
-
+{{#if multiTenant}}import { tenants } from './tenants';
+{{/if}}
 /**
  * The port's vocabulary, not JoonaPay's. JoonaPay speaks two — lowercase over
  * REST, uppercase over webhooks — and storing whichever arrived first is how a
@@ -20,10 +20,10 @@ export const joonapayPayments = pgTable(
   'joonapay_payments',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-    tenantId: uuid('tenant_id')
+{{#if multiTenant}}    tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    /** JoonaPay's payment_request_uuid. Unique — this makes redelivery a no-op. */
+{{/if}}    /** JoonaPay's payment_request_uuid. Unique — this makes redelivery a no-op. */
     joonapayUuid: text('joonapay_uuid').notNull().unique(),
     /** JoonaPay's human reference, e.g. GGUWWIMRJHHF. */
     reference: text('reference').notNull(),
@@ -44,8 +44,10 @@ export const joonapayPayments = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    unique('joonapay_tenant_external').on(t.tenantId, t.externalId),
+{{#if multiTenant}}    unique('joonapay_tenant_external').on(t.tenantId, t.externalId),
     index('joonapay_payments_tenant_idx').on(t.tenantId, t.createdAt),
-    index('joonapay_payments_reference_idx').on(t.reference),
+{{else}}    unique('joonapay_external').on(t.externalId),
+    index('joonapay_payments_created_idx').on(t.createdAt),
+{{/if}}    index('joonapay_payments_reference_idx').on(t.reference),
   ],
 );

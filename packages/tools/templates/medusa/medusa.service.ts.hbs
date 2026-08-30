@@ -6,9 +6,15 @@ import Medusa from '@medusajs/js-sdk';
  *
  * Two boundary rules this class exists to hold:
  *
- * 1. **Medusa has no tenancy.** Isolation is a sales channel per tenant, applied
- *    here rather than by callers — a caller that could choose the channel could
- *    read another tenant's catalogue.
+{{#if multiTenant}} * 1. **Medusa has no tenancy.** Isolation is a sales channel per tenant, applied
+{{else}} * 1. **The sales channel is chosen here**, not by callers — a caller that could
+{{/if}}
+{{#if multiTenant}} *    here rather than by callers — a caller that could choose the channel could
+{{else}} *    pick its own channel could read a catalogue it was not meant to see.
+{{/if}}
+{{#if multiTenant}} *    read another tenant's catalogue.
+{{else}} *
+{{/if}}
  * 2. **Medusa money is an integer in minor units** (1999 = 19.99). The rest of
  *    this codebase uses decimal strings, so conversion happens at this edge and
  *    never passes through a float.

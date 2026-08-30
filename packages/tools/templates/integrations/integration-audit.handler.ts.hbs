@@ -27,9 +27,13 @@ export class IntegrationAuditHandler implements OnModuleInit {
 
   onModuleInit(): void {
     this.registry.on(IntegrationEventReceived, 'audit', async ({ payload }) => {
-      // A platform event, not a tenant one: a third-party tool knows nothing
+{{#if multiTenant}}      // A platform event, not a tenant one: a third-party tool knows nothing
       // about our tenants, so attributing the delivery to one would be a guess.
       await this.audit.recordPlatformEvent({
+{{else}}      // Attributing a third-party delivery to a user would be a guess, so it is
+      // recorded as what it is: something that arrived.
+      await this.audit.record({
+{{/if}}
         action: `integration.${payload.source}.${payload.event}`,
         targetType: payload.source,
         targetId: payload.deliveryId,

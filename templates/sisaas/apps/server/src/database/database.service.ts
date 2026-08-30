@@ -39,14 +39,33 @@ export class DatabaseService implements OnModuleDestroy {
     }
   }
 
-  /** The BYPASSRLS admin connection. Throws if ADMIN_DATABASE_URL is not set. */ // si:when multi-tenant
-  /** The admin connection, if one was configured. Throws if not. */ // si:when single-tenant
+  // si:when-begin multi-tenant
+  /** The BYPASSRLS admin connection. Throws if ADMIN_DATABASE_URL is not set. */
   requireAdminDb(): DrizzleDb {
     if (!this.adminDb) {
       throw new Error('ADMIN_DATABASE_URL is not configured');
     }
     return this.adminDb;
   }
+  // si:when-end
+
+  // si:when-begin single-tenant
+  /**
+   * A connection confined to no tenant.
+   *
+   * In a multi-tenant build that means the BYPASSRLS role, and callers get it or
+   * an error. Here there is no RLS to bypass, so the ordinary connection already
+   * IS unconfined and the name is the only thing that changes.
+   *
+   * Kept rather than removed because it is what every shared module asks for —
+   * webhook inboxes, MFA, payment reconcilers, all of which run before any
+   * request context exists. Making them each branch on tenancy would be the same
+   * decision written twenty-seven times.
+   */
+  requireAdminDb(): DrizzleDb {
+    return this.adminDb ?? this.db;
+  }
+  // si:when-end
 
   async onModuleDestroy(): Promise<void> {
     await this.client.end({ timeout: 5 });

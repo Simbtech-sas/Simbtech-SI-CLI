@@ -11,13 +11,13 @@ CREATE TYPE "kpay_kind" AS ENUM('payment', 'withdrawal', 'refund');--> statement
 
 CREATE TABLE "kpay_payments" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
-	"kind" "kpay_kind" DEFAULT 'payment' NOT NULL,
+{{#if multiTenant}}	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+{{/if}}	"kind" "kpay_kind" DEFAULT 'payment' NOT NULL,
 	-- KPay's own id. UNIQUE, and that is what makes webhook redelivery a no-op.
 	"kpay_payment_id" text NOT NULL UNIQUE,
 	"reference" text NOT NULL,
 	"provider_reference" text,
-	-- Our id, sent as KPay's idempotency key. Unique per tenant.
+	-- Our id, sent as KPay's idempotency key. Unique.
 	"external_id" text NOT NULL,
 	"status" "kpay_status" DEFAULT 'PENDING' NOT NULL,
 	-- Money as a DECIMAL, never a float. numeric(20,4) covers XAF integers and
@@ -39,13 +39,15 @@ CREATE TABLE "kpay_payments" (
 	"completed_at" timestamp with time zone,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "kpay_tenant_external" UNIQUE ("tenant_id", "external_id")
-);--> statement-breakpoint
-CREATE INDEX "kpay_payments_tenant_idx" ON "kpay_payments" ("tenant_id", "created_at");--> statement-breakpoint
-CREATE INDEX "kpay_payments_reference_idx" ON "kpay_payments" ("reference");--> statement-breakpoint
+{{#if multiTenant}}	CONSTRAINT "kpay_tenant_external" UNIQUE ("tenant_id", "external_id")
+{{else}}	CONSTRAINT "kpay_external" UNIQUE ("external_id")
+{{/if}});--> statement-breakpoint
+{{#if multiTenant}}CREATE INDEX "kpay_payments_tenant_idx" ON "kpay_payments" ("tenant_id", "created_at");--> statement-breakpoint
+{{else}}CREATE INDEX "kpay_payments_created_idx" ON "kpay_payments" ("created_at");--> statement-breakpoint
+{{/if}}CREATE INDEX "kpay_payments_reference_idx" ON "kpay_payments" ("reference");--> statement-breakpoint
 
-ALTER TABLE "kpay_payments" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
+{{#if multiTenant}}ALTER TABLE "kpay_payments" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "kpay_payments" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE POLICY "tenant_isolation" ON "kpay_payments"
 	USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
-	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);
+	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);{{/if}}

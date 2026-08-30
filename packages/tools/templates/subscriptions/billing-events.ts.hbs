@@ -4,7 +4,7 @@ import { defineEvent, type EventContract } from './contract.ts';
 /**
  * What billing announces.
  *
- * These carry `billingEmail` and `tenantName` on the payload rather than making
+ * These carry `billingEmail` and `accountName` on the payload rather than making
  * consumers look them up. In a single deployable that looks redundant; across
  * services it is the difference between a notification service that needs a
  * synchronous call into identity on every message — and a broker outage taking
@@ -21,7 +21,7 @@ const billingBase = z.object({
   /** Decimal string in major units. Never a float. */
   amount: z.string(),
   currency: z.string().length(3),
-  tenantName: z.string(),
+  accountName: z.string(),
   billingEmail: z.string().email().nullable(),
 });
 

@@ -323,9 +323,7 @@ export async function newProject(name: string | undefined, options: NewOptions):
     const picked: string[] = [...(options.tool ?? [])];
     if (!options.blank && !options.yes && (options.tool ?? []).length === 0) {
       const available = forFlavor(await loadRegistry(), registryFlavor(flavor.id))
-        .filter((t) => t.kind !== 'feature')
-        // Do not offer what would be refused two lines later.
-        .filter((t) => !(features.includes('single-tenant') && t.id in TENANT_COUPLED_TOOLS));
+        .filter((t) => t.kind !== 'feature');
       if (available.length === 0) {
         // Say it. A picker that simply does not appear reads as a bug, and it
         // WAS one: SiAPP offered nothing for a while because the registry is
@@ -359,7 +357,6 @@ export async function newProject(name: string | undefined, options: NewOptions):
     // The choices' own tools first: a choice that wires KPay must not be
     // reordered behind a tool the user happened to pick.
     const tools = [...new Set([...effects.tools, ...picked])];
-    assertTenancySupported(features, tools);
     let pending: PendingDeps | undefined;
     if (tools.length > 0) {
       spinner.start(`Wiring in ${tools.join(', ')}`);
@@ -375,6 +372,9 @@ export async function newProject(name: string | undefined, options: NewOptions):
           path: dir,
           skipInstall: options.skipInstall,
           quiet: true,
+          // `.si/project.json` is written further down, so the record is not
+          // there to read back yet.
+          multiTenant: !features.includes('single-tenant'),
         });
         spinner.stop(`Wired in ${tools.join(', ')}`);
       } catch (err) {
@@ -464,41 +464,6 @@ export async function newProject(name: string | undefined, options: NewOptions):
     await rm(dir, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
-}
-
-/**
- * Tool templates that are still written against a tenant, and so cannot be
- * composed into a single-tenant project.
- *
- * Each reads `runInTenantContext`, or a tenant id off the principal, or declares
- * a `tenant_id` column with a foreign key to a `tenants` table that a SiAPP build
- * does not have. Wiring one in produces a tree that does not compile — and the
- * choices route around the registry's own `flavors` filter, so nothing else
- * catches it.
- *
- * Refusing is the honest answer until they are marked up the way the main
- * template now is. Each of these is genuinely wanted in a normal web app, so this
- * list is a to-do, not a design statement — see docs/FOLLOW-UPS.md.
- */
-export const TENANT_COUPLED_TOOLS: Record<string, string> = {
-  'payments-kpay': 'the payments tables are tenant-scoped with an RLS policy',
-  'payments-joonapay': 'the payments tables are tenant-scoped with an RLS policy',
-  'payments-reconcile': 'the reconcile workflow keys on a tenant id',
-  subscriptions: 'subscriptions are one-per-tenant, with tenant-scoped invoices',
-  temporal: 'the activities open a tenant context and the example workflow onboards a tenant',
-};
-
-/** Fail before writing, not after: a broken tree is worse than a refusal. */
-function assertTenancySupported(features: string[], tools: string[]): void {
-  if (!features.includes('single-tenant')) return;
-  const blocked = tools.filter((t) => t in TENANT_COUPLED_TOOLS);
-  if (blocked.length === 0) return;
-  throw new Error(
-    `these do not support a single-tenant build yet:\n` +
-      blocked.map((t) => `  - ${t}: ${TENANT_COUPLED_TOOLS[t]}`).join('\n') +
-      `\n\nScaffolding them here produces a project that does not compile, so si stops\n` +
-      `instead. Either drop them, or use \`si new -f sisaas\` where they work today.`,
-  );
 }
 
 /**

@@ -2,14 +2,18 @@ import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { and, eq, lte, sql } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { DatabaseService, type TenantTx } from '../../../database/database.service';
-import { plans, subscriptionInvoices, subscriptions, tenants } from '../../../database/schema';
+{{#if multiTenant}}import { plans, subscriptionInvoices, subscriptions, tenants } from '../../../database/schema';
+{{else}}import { plans, subscriptionInvoices, subscriptions, users } from '../../../database/schema';
+{{/if}}
 import { InvoiceIssued, InvoicePaid, SubscriptionPaymentRequested } from '@{{brand}}/events';
 import { OutboxService } from '../../events/application/outbox.service';
 import { BILLING_PORT, type BillingPort } from '../domain/billing-port';
 import { GRACE_DAYS, RENEWAL_LEAD_DAYS, nextPeriodEnd, stepFor } from '../domain/dunning';
 
 export interface StartSubscription {
-  tenantId: string;
+{{#if multiTenant}}  tenantId: string;
+{{else}}  userId: string;
+{{/if}}
   planCode: string;
   billingPhone?: string;
   billingEmail?: string;
@@ -53,11 +57,15 @@ export class SubscriptionsService {
     const trialEnd =
       plan.trialDays > 0 ? new Date(now.getTime() + plan.trialDays * 86_400_000) : null;
 
-    return this.database.runInTenantContext(input.tenantId, async (tx) => {
+{{#if multiTenant}}    return this.database.runInTenantContext(input.tenantId, async (tx) => {
+{{else}}    return this.database.transaction(async (tx) => {
+{{/if}}
       const [subscription] = await tx
         .insert(subscriptions)
         .values({
-          tenantId: input.tenantId,
+{{#if multiTenant}}          tenantId: input.tenantId,
+{{else}}          userId: input.userId,
+{{/if}}
           planId: plan.id,
           // A trial is active access that has not been paid for. Anything else
           // gets billed immediately.
@@ -75,9 +83,15 @@ export class SubscriptionsService {
     });
   }
 
-  /** Entitlement check. Suspended and cancelled tenants keep their data, not their access. */
-  async hasAccess(tenantId: string, feature?: string): Promise<boolean> {
-    const current = await this.current(tenantId);
+{{#if multiTenant}}  /** Entitlement check. Suspended and cancelled tenants keep their data, not their access. */
+{{else}}  /** Entitlement check. Suspended and cancelled users keep their data, not their access. */
+{{/if}}
+{{#if multiTenant}}  async hasAccess(tenantId: string, feature?: string): Promise<boolean> {
+{{else}}  async hasAccess(userId: string, feature?: string): Promise<boolean> {
+{{/if}}
+{{#if multiTenant}}    const current = await this.current(tenantId);
+{{else}}    const current = await this.current(userId);
+{{/if}}
     if (!current) return false;
     if (!['active', 'trialing', 'pending_payment', 'past_due'].includes(current.subscription.status)) {
       return false;
@@ -86,13 +100,19 @@ export class SubscriptionsService {
     return current.plan.features[feature] === true;
   }
 
-  async current(tenantId: string) {
-    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{#if multiTenant}}  async current(tenantId: string) {
+{{else}}  async current(userId: string) {
+{{/if}}
+{{#if multiTenant}}    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{else}}    return this.database.transaction(async (tx) => {
+{{/if}}
       const [row] = await tx
         .select({ subscription: subscriptions, plan: plans })
         .from(subscriptions)
         .innerJoin(plans, eq(plans.id, subscriptions.planId))
-        .where(eq(subscriptions.tenantId, tenantId))
+{{#if multiTenant}}        .where(eq(subscriptions.tenantId, tenantId))
+{{else}}        .where(eq(subscriptions.userId, userId))
+{{/if}}
         .limit(1);
       return row;
     });
@@ -105,8 +125,12 @@ export class SubscriptionsService {
    * cancel is taking money for time they do not get, and it is the fastest way
    * to turn a quiet churn into a chargeback.
    */
-  async cancel(tenantId: string, immediately = false) {
-    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{#if multiTenant}}  async cancel(tenantId: string, immediately = false) {
+{{else}}  async cancel(userId: string, immediately = false) {
+{{/if}}
+{{#if multiTenant}}    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{else}}    return this.database.transaction(async (tx) => {
+{{/if}}
       const [updated] = await tx
         .update(subscriptions)
         .set(
@@ -114,7 +138,9 @@ export class SubscriptionsService {
             ? { status: 'cancelled', cancelledAt: new Date(), updatedAt: new Date() }
             : { cancelAtPeriodEnd: true, updatedAt: new Date() },
         )
-        .where(eq(subscriptions.tenantId, tenantId))
+{{#if multiTenant}}        .where(eq(subscriptions.tenantId, tenantId))
+{{else}}        .where(eq(subscriptions.userId, userId))
+{{/if}}
         .returning();
       return updated;
     });
@@ -136,7 +162,8 @@ export class SubscriptionsService {
     const [invoice] = await tx
       .insert(subscriptionInvoices)
       .values({
-        tenantId: subscription.tenantId,
+{{#if multiTenant}}        tenantId: subscription.tenantId,
+{{/if}}
         subscriptionId: subscription.id,
         number: `INV-${now.getUTCFullYear()}-${randomUUID().slice(0, 8).toUpperCase()}`,
         status: 'draft',
@@ -151,7 +178,8 @@ export class SubscriptionsService {
     if (!invoice) return; // already requested for this period
 
     const result = await this.billing.charge({
-      tenantId: subscription.tenantId,
+{{#if multiTenant}}      tenantId: subscription.tenantId,
+{{/if}}
       externalId: invoice.id,
       amount: plan.amount,
       currency: plan.currency,
@@ -193,7 +221,8 @@ export class SubscriptionsService {
     const base = await this.payloadFor(tx, subscription, plan);
     await this.outbox.publish(tx, InvoiceIssued, {
       aggregateId: invoice.id,
-      tenantId: subscription.tenantId,
+{{#if multiTenant}}      tenantId: subscription.tenantId,
+{{/if}}
       payload: {
         ...base,
         invoiceId: invoice.id,
@@ -204,7 +233,8 @@ export class SubscriptionsService {
     });
     await this.outbox.publish(tx, SubscriptionPaymentRequested, {
       aggregateId: subscription.id,
-      tenantId: subscription.tenantId,
+{{#if multiTenant}}      tenantId: subscription.tenantId,
+{{/if}}
       payload: {
         ...base,
         invoiceId: invoice.id,
@@ -220,7 +250,9 @@ export class SubscriptionsService {
   /**
    * The fields every billing event carries.
    *
-   * The tenant NAME is read here rather than left for the consumer to look up:
+{{#if multiTenant}}   * The tenant NAME is read here rather than left for the consumer to look up:
+{{else}}   * The billing EMAIL is read here rather than left for the consumer to look up:
+{{/if}}
    * once notifications live in their own service, a lookup means a synchronous
    * call into identity on every message, and a broker outage takes the mail with
    * it. See the note on personal data in `packages/events/src/billing.ts`.
@@ -230,7 +262,7 @@ export class SubscriptionsService {
     subscription: typeof subscriptions.$inferSelect,
     plan: { name: string; amount: string; currency: string },
   ) {
-    const [tenant] = await tx
+{{#if multiTenant}}    const [tenant] = await tx
       .select({ name: tenants.name })
       .from(tenants)
       .where(eq(tenants.id, subscription.tenantId))
@@ -240,9 +272,23 @@ export class SubscriptionsService {
       planName: plan.name,
       amount: plan.amount,
       currency: plan.currency,
-      tenantName: tenant?.name ?? subscription.tenantId,
+      accountName: tenant?.name ?? subscription.tenantId,
       billingEmail: subscription.billingEmail,
     };
+{{else}}    const [user] = await tx
+      .select({ email: users.email, name: users.name })
+      .from(users)
+      .where(eq(users.id, subscription.userId))
+      .limit(1);
+    return {
+      subscriptionId: subscription.id,
+      planName: plan.name,
+      amount: plan.amount,
+      currency: plan.currency,
+      accountName: user?.name ?? user?.email ?? subscription.userId,
+      billingEmail: subscription.billingEmail ?? user?.email ?? null,
+    };
+{{/if}}
   }
 
   private async markPaid(
@@ -292,7 +338,9 @@ export class SubscriptionsService {
       return true;
     }
 
-    await this.database.runInTenantContext(invoice.tenantId, async (tx) => {
+{{#if multiTenant}}    await this.database.runInTenantContext(invoice.tenantId, async (tx) => {
+{{else}}    await this.database.transaction(async (tx) => {
+{{/if}}
       await tx
         .update(subscriptionInvoices)
         .set({ status: 'paid', paidAt: new Date() })
@@ -312,7 +360,8 @@ export class SubscriptionsService {
       // cannot come apart.
       await this.outbox.publish(tx, InvoicePaid, {
         aggregateId: invoice.id,
-        tenantId: invoice.tenantId,
+{{#if multiTenant}}        tenantId: invoice.tenantId,
+{{/if}}
         payload: {
           ...(await this.payloadFor(tx, row.subscription, row.plan)),
           invoiceId: invoice.id,
@@ -332,10 +381,20 @@ export class SubscriptionsService {
     const horizon = new Date(now.getTime() + RENEWAL_LEAD_DAYS * 86_400_000);
     return this.database
       .requireAdminDb()
-      .select({ subscription: subscriptions, plan: plans, tenantName: tenants.name })
+{{#if multiTenant}}      .select({ subscription: subscriptions, plan: plans, accountName: tenants.name })
       .from(subscriptions)
       .innerJoin(plans, eq(plans.id, subscriptions.planId))
       .innerJoin(tenants, eq(tenants.id, subscriptions.tenantId))
+{{else}}      .select({
+        subscription: subscriptions,
+        plan: plans,
+        // Falls back to the address: a name is optional, an account is not.
+        accountName: sql<string>`coalesce(${users.name}, ${users.email})`,
+      })
+      .from(subscriptions)
+      .innerJoin(plans, eq(plans.id, subscriptions.planId))
+      .innerJoin(users, eq(users.id, subscriptions.userId))
+{{/if}}
       .where(
         and(
           lte(subscriptions.currentPeriodEnd, horizon),

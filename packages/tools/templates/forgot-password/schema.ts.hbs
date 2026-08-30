@@ -5,8 +5,12 @@ import { users } from './identity';
 /**
  * Reset tokens, stored hashed and single-use.
  *
- * Not RLS-scoped: a reset is requested by someone who cannot log in, so there is
- * no tenant context to scope by.
+{{#if multiTenant}} * Not RLS-scoped: a reset is requested by someone who cannot log in, so there is
+{{else}} * Not RLS-scoped: a reset is requested by someone who cannot log in, so there is
+{{/if}}
+{{#if multiTenant}} * no tenant context to scope by.
+{{else}} * no session to scope by.
+{{/if}}
  */
 export const passwordResetTokens = pgTable(
   'password_reset_tokens',

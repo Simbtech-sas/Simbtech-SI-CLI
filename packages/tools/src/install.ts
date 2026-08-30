@@ -42,6 +42,15 @@ export interface InstallOptions {
   dryRun?: boolean;
   /** Skip the package-manager call. Useful in tests and for offline batching. */
   skipInstall?: boolean;
+  /**
+   * Whether the target project has tenants.
+   *
+   * Tool templates are Handlebars, not marker-pruned like the flavor templates,
+   * so a tenancy-dependent template branches on `{{#if multiTenant}}`. Defaults
+   * to true: every entry was written for SiSAAS, and a template that has not
+   * been taught otherwise must keep behaving the way it always has.
+   */
+  multiTenant?: boolean;
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -85,7 +94,7 @@ export async function installTool(tool: Tool, options: InstallOptions): Promise<
     skipped: [],
     notes: tool.notes,
   };
-  const context = { brand: options.brand, tool };
+  const context = { brand: options.brand, tool, multiTenant: options.multiTenant ?? true };
 
   // ── files ─────────────────────────────────────────────────────────────────
   for (const file of tool.files) {

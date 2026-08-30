@@ -24,7 +24,8 @@ export interface BillingCapabilities {
 }
 
 export interface ChargeRequest {
-  tenantId: string;
+{{#if multiTenant}}  tenantId: string;
+{{/if}}
   /** Our invoice id, used as the provider's idempotency key. */
   externalId: string;
   amount: string;

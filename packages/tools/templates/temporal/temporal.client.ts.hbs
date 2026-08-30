@@ -29,12 +29,18 @@ export class TemporalClient implements OnModuleDestroy {
   /**
    * The workflow id IS the idempotency key.
    *
-   * `<tenantId>:<workflow>:<key>` — one namespace shared by every tenant, with
+{{#if multiTenant}}   * `<tenantId>:<workflow>:<key>` — one namespace shared by every tenant, with
    * the tenant in the id. A namespace per tenant is possible and is how people
    * discover that namespaces are a heavyweight, operator-managed object.
-   */
-  static workflowId(tenantId: string | null, workflow: string, key: string): string {
-    return `${tenantId ?? 'platform'}:${workflow}:${key}`;
+{{else}}   * `<workflow>:<key>` — starting the same workflow twice for the same key is
+   * refused by Temporal rather than by anything you have to remember to write.
+{{/if}}   */
+{{#if multiTenant}}  static workflowId(tenantId: string | null, workflow: string, key: string): string {
+{{else}}  static workflowId(workflow: string, key: string): string {
+{{/if}}
+{{#if multiTenant}}    return `${tenantId ?? 'platform'}:${workflow}:${key}`;
+{{else}}    return `${workflow}:${key}`;
+{{/if}}
   }
 
   async connect(): Promise<Client> {
@@ -53,7 +59,9 @@ export class TemporalClient implements OnModuleDestroy {
    *
    * This is what makes an at-least-once event safe to act on. Kafka WILL deliver
    * the same message twice; without this, the second delivery starts a second
-   * onboarding for the same tenant — two welcome emails and two timers.
+{{#if multiTenant}}   * onboarding for the same tenant — two welcome emails and two timers.
+{{else}}   * onboarding for the same subject — two welcome emails and two timers.
+{{/if}}
    *
    * `RejectDuplicate` on purpose: the default policy would happily start a new
    * run once the first one closed, which turns a redelivered week-old event into

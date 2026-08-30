@@ -1,7 +1,9 @@
 import path from 'node:path';
 import { TestWorkflowEnvironment } from '@temporalio/testing';
 import { Worker } from '@temporalio/worker';
-import { tenantOnboarding } from '../../src/modules/temporal/workflows/tenant-onboarding.workflow';
+{{#if multiTenant}}import { tenantOnboarding } from '../../src/modules/temporal/workflows/onboarding.workflow';
+{{else}}import { userOnboarding } from '../../src/modules/temporal/workflows/onboarding.workflow';
+{{/if}}
 import { EMAIL_VERIFIED_SIGNAL } from '../../src/modules/temporal/domain/workflow-signals';
 
 /**
@@ -17,7 +19,9 @@ import { EMAIL_VERIFIED_SIGNAL } from '../../src/modules/temporal/domain/workflo
  */
 jest.setTimeout(120_000);
 
-describe('tenant onboarding', () => {
+{{#if multiTenant}}describe('tenant onboarding', () => {
+{{else}}describe('user onboarding', () => {
+{{/if}}
   let env: TestWorkflowEnvironment;
   const published: unknown[][] = [];
 
@@ -37,8 +41,12 @@ describe('tenant onboarding', () => {
       taskQueue: 'test',
       workflowsPath: path.resolve(__dirname, '../../src/modules/temporal/workflows/index.ts'),
       activities: {
-        async publishTenantActivated(context: { tenantId: string }) {
-          published.push(['activated', context.tenantId]);
+{{#if multiTenant}}        async publishTenantActivated(context: { tenantId: string }) {
+{{else}}        async publishUserActivated(context: { userId: string }) {
+{{/if}}
+{{#if multiTenant}}          published.push(['activated', context.tenantId]);
+{{else}}          published.push(['activated', context.userId]);
+{{/if}}
         },
         async publishOnboardingAbandoned(_context: unknown, step: string) {
           published.push(['abandoned', step]);
@@ -51,10 +59,16 @@ describe('tenant onboarding', () => {
     // not alert on it, which is why it is a distinct event.
     const w = await worker();
     const result = await w.runUntil(
-      env.client.workflow.execute(tenantOnboarding, {
-        workflowId: 'tenant-a:onboarding:tenant-a',
+{{#if multiTenant}}      env.client.workflow.execute(tenantOnboarding, {
+{{else}}      env.client.workflow.execute(userOnboarding, {
+{{/if}}
+{{#if multiTenant}}        workflowId: 'tenant-a:onboarding:tenant-a',
+{{else}}        workflowId: 'onboarding:user-a',
+{{/if}}
         taskQueue: 'test',
-        args: [{ tenantId: '11111111-1111-1111-1111-111111111111', tenantName: 'A' }],
+{{#if multiTenant}}        args: [{ tenantId: '11111111-1111-1111-1111-111111111111', tenantName: 'A' }],
+{{else}}        args: [{ userId: '11111111-1111-1111-1111-111111111111', email: 'a@example.com' }],
+{{/if}}
       }),
     );
     expect(result).toBe('abandoned');
@@ -64,10 +78,16 @@ describe('tenant onboarding', () => {
   it('wakes on the signal and activates', async () => {
     const w = await worker();
     const result = await w.runUntil(async () => {
-      const handle = await env.client.workflow.start(tenantOnboarding, {
-        workflowId: 'tenant-b:onboarding:tenant-b',
+{{#if multiTenant}}      const handle = await env.client.workflow.start(tenantOnboarding, {
+{{else}}      const handle = await env.client.workflow.start(userOnboarding, {
+{{/if}}
+{{#if multiTenant}}        workflowId: 'tenant-b:onboarding:tenant-b',
+{{else}}        workflowId: 'onboarding:user-b',
+{{/if}}
         taskQueue: 'test',
-        args: [{ tenantId: '22222222-2222-2222-2222-222222222222', tenantName: 'B' }],
+{{#if multiTenant}}        args: [{ tenantId: '22222222-2222-2222-2222-222222222222', tenantName: 'B' }],
+{{else}}        args: [{ userId: '22222222-2222-2222-2222-222222222222', email: 'b@example.com' }],
+{{/if}}
       });
       await handle.signal(EMAIL_VERIFIED_SIGNAL);
       return handle.result();
@@ -82,16 +102,28 @@ describe('tenant onboarding', () => {
     // seven-day process with a second welcome email.
     const w = await worker();
     await w.runUntil(async () => {
-      const handle = await env.client.workflow.start(tenantOnboarding, {
-        workflowId: 'tenant-c:onboarding:tenant-c',
+{{#if multiTenant}}      const handle = await env.client.workflow.start(tenantOnboarding, {
+{{else}}      const handle = await env.client.workflow.start(userOnboarding, {
+{{/if}}
+{{#if multiTenant}}        workflowId: 'tenant-c:onboarding:tenant-c',
+{{else}}        workflowId: 'onboarding:user-c',
+{{/if}}
         taskQueue: 'test',
-        args: [{ tenantId: '33333333-3333-3333-3333-333333333333', tenantName: 'C' }],
+{{#if multiTenant}}        args: [{ tenantId: '33333333-3333-3333-3333-333333333333', tenantName: 'C' }],
+{{else}}        args: [{ userId: '33333333-3333-3333-3333-333333333333', email: 'c@example.com' }],
+{{/if}}
       });
       await expect(
-        env.client.workflow.start(tenantOnboarding, {
-          workflowId: 'tenant-c:onboarding:tenant-c',
+{{#if multiTenant}}        env.client.workflow.start(tenantOnboarding, {
+{{else}}        env.client.workflow.start(userOnboarding, {
+{{/if}}
+{{#if multiTenant}}          workflowId: 'tenant-c:onboarding:tenant-c',
+{{else}}          workflowId: 'onboarding:user-c',
+{{/if}}
           taskQueue: 'test',
-          args: [{ tenantId: '33333333-3333-3333-3333-333333333333', tenantName: 'C' }],
+{{#if multiTenant}}          args: [{ tenantId: '33333333-3333-3333-3333-333333333333', tenantName: 'C' }],
+{{else}}          args: [{ userId: '33333333-3333-3333-3333-333333333333', email: 'c@example.com' }],
+{{/if}}
         }),
       ).rejects.toThrow(/already started/i);
       await handle.signal(EMAIL_VERIFIED_SIGNAL);

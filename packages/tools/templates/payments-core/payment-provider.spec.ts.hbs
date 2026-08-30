@@ -19,7 +19,8 @@ function provider(over: Partial<PaymentProvider> & { id: string }): PaymentProvi
 }
 
 const request = (over: Partial<ChargeRequest> = {}): ChargeRequest => ({
-  tenantId: 't1',
+{{#if multiTenant}}  tenantId: 't1',
+{{/if}}
   externalId: 'e1',
   amount: '1000',
   currency: 'XAF',

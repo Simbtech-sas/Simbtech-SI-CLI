@@ -4,10 +4,13 @@ import { sql } from 'drizzle-orm';
 /**
  * Every webhook delivery an imported tool has made.
  *
- * Deliberately NOT tenant-scoped and NOT RLS-protected: a third-party tool knows
+{{#if multiTenant}} * Deliberately NOT tenant-scoped and NOT RLS-protected: a third-party tool knows
  * nothing about our tenants, so a delivery belongs to the integration, not to a
  * customer. Whatever the event turns into downstream is tenant-scoped; this row
  * is the doorbell, not the visitor.
+{{else}} * A delivery belongs to the integration, not to whoever it turns out to concern.
+ * This row is the doorbell, not the visitor.
+{{/if}}
  *
  * The unique constraint is the whole point. Every webhook system on earth retries,
  * so `(source, delivery_id)` is what makes the second delivery a no-op.

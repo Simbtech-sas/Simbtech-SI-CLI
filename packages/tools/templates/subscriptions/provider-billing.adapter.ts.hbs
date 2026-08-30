@@ -43,7 +43,8 @@ export class ProviderBillingAdapter implements BillingPort {
       // actually push one, and falls back to a link rather than failing.
       const mode = request.phoneNumber ? 'ussd' : 'link';
       const provider = this.providers.select({
-        tenantId: request.tenantId,
+{{#if multiTenant}}        tenantId: request.tenantId,
+{{/if}}
         externalId: request.externalId,
         amount: request.amount,
         currency: request.currency,
@@ -56,7 +57,8 @@ export class ProviderBillingAdapter implements BillingPort {
       });
 
       const result = await provider.charge({
-        tenantId: request.tenantId,
+{{#if multiTenant}}        tenantId: request.tenantId,
+{{/if}}
         externalId: request.externalId,
         amount: request.amount,
         currency: request.currency,

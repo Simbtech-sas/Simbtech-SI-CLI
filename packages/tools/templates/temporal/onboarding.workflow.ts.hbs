@@ -3,7 +3,9 @@ import type { Activities, OnboardingContext } from '../application/activities';
 import { EMAIL_VERIFIED_SIGNAL } from '../domain/workflow-signals';
 
 /**
- * Onboarding, as a durable process.
+{{#if multiTenant}} * Tenant onboarding, as a durable process.
+{{else}} * User onboarding, as a durable process.
+{{/if}} *
  *
  * This is the shape of problem Temporal exists for, and the shape neither Kafka
  * nor BullMQ handles: **one process, several steps, waiting days on a human.**
@@ -40,7 +42,7 @@ const activities = proxyActivities<Activities>({
   },
 });
 
-export async function tenantOnboarding(input: {
+{{#if multiTenant}}export async function tenantOnboarding(input: {
   tenantId: string;
   tenantName: string;
 }): Promise<'activated' | 'abandoned'> {
@@ -49,6 +51,16 @@ export async function tenantOnboarding(input: {
     tenantName: input.tenantName,
     workflowId: workflowInfo().workflowId,
   };
+{{else}}export async function userOnboarding(input: {
+  userId: string;
+  email: string;
+}): Promise<'activated' | 'abandoned'> {
+  const context: OnboardingContext = {
+    userId: input.userId,
+    email: input.email,
+    workflowId: workflowInfo().workflowId,
+  };
+{{/if}}
 
   let verified = false;
   setHandler(emailVerified, () => {
@@ -64,6 +76,7 @@ export async function tenantOnboarding(input: {
     return 'abandoned';
   }
 
-  await activities.publishTenantActivated(context);
-  return 'activated';
+{{#if multiTenant}}  await activities.publishTenantActivated(context);
+{{else}}  await activities.publishUserActivated(context);
+{{/if}}  return 'activated';
 }

@@ -3,11 +3,19 @@ import { AccessToken, RoomServiceClient } from 'livekit-server-sdk';
 import { AppConfigService } from '../../config/app-config.service';
 
 /**
- * LiveKit rooms, scoped to a tenant.
+{{#if multiTenant}} * LiveKit rooms, scoped to a tenant.
+{{else}} * LiveKit rooms.
+{{/if}}
  *
- * Room names are prefixed with the tenant id and the prefix is applied here, not
- * by callers — a token is a bearer credential, so a caller that could pass a raw
- * room name could join another tenant's call.
+{{#if multiTenant}} * Room names are prefixed with the tenant id and the prefix is applied here, not
+{{else}} * Which room a caller may join is decided by the guard on the route that issues
+{{/if}}
+{{#if multiTenant}} * by callers — a token is a bearer credential, so a caller that could pass a raw
+{{else}} * the token. A token is a bearer credential: once handed out it is good for that
+{{/if}}
+{{#if multiTenant}} * room name could join another tenant's call.
+{{else}} * room until it expires, so issue it only after checking.
+{{/if}}
  */
 @Injectable()
 export class LivekitService {
@@ -22,13 +30,20 @@ export class LivekitService {
     void config;
   }
 
-  private roomName(tenantId: string, room: string): string {
-    return `${tenantId}:${room}`;
+{{#if multiTenant}}  private roomName(tenantId: string, room: string): string {
+{{else}}  private roomName(room: string): string {
+{{/if}}
+{{#if multiTenant}}    return `${tenantId}:${room}`;
+{{else}}    return room;
+{{/if}}
   }
 
-  /** A join token for one participant in one tenant's room. Expires in an hour. */
+{{#if multiTenant}}  /** A join token for one participant in one tenant's room. Expires in an hour. */
+{{else}}  /** A join token for one participant in one room. Expires in an hour. */
+{{/if}}
   async createToken(input: {
-    tenantId: string;
+{{#if multiTenant}}    tenantId: string;
+{{/if}}
     room: string;
     identity: string;
     name?: string;
@@ -40,7 +55,9 @@ export class LivekitService {
       ttl: '1h',
     });
     token.addGrant({
-      room: this.roomName(input.tenantId, input.room),
+{{#if multiTenant}}      room: this.roomName(input.tenantId, input.room),
+{{else}}      room: this.roomName(input.room),
+{{/if}}
       roomJoin: true,
       canPublish: input.canPublish ?? true,
       canSubscribe: true,
@@ -54,12 +71,20 @@ export class LivekitService {
     return new RoomServiceClient(httpUrl, this.apiKey, this.apiSecret);
   }
 
-  async listRooms(tenantId: string) {
+{{#if multiTenant}}  async listRooms(tenantId: string) {
+{{else}}  async listRooms() {
+{{/if}}
     const rooms = await this.client.listRooms();
-    return rooms.filter((r) => r.name.startsWith(`${tenantId}:`));
+{{#if multiTenant}}    return rooms.filter((r) => r.name.startsWith(`${tenantId}:`));
+{{else}}    return rooms;
+{{/if}}
   }
 
-  async deleteRoom(tenantId: string, room: string): Promise<void> {
-    await this.client.deleteRoom(this.roomName(tenantId, room));
+{{#if multiTenant}}  async deleteRoom(tenantId: string, room: string): Promise<void> {
+{{else}}  async deleteRoom(room: string): Promise<void> {
+{{/if}}
+{{#if multiTenant}}    await this.client.deleteRoom(this.roomName(tenantId, room));
+{{else}}    await this.client.deleteRoom(this.roomName(room));
+{{/if}}
   }
 }

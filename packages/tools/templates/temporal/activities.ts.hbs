@@ -1,6 +1,7 @@
 import type { Logger } from '@nestjs/common';
-import { TenantActivated, TenantOnboardingAbandoned } from '@{{brand}}/events';
-import type { DatabaseService } from '../../../database/database.service';
+{{#if multiTenant}}import { TenantActivated, TenantOnboardingAbandoned } from '@{{brand}}/events';
+{{else}}import { UserActivated, UserOnboardingAbandoned } from '@{{brand}}/events';
+{{/if}}import type { DatabaseService } from '../../../database/database.service';
 import type { OutboxService } from '../../events/application/outbox.service';
 
 /**
@@ -22,9 +23,11 @@ export interface ActivityDeps {
 }
 
 export interface OnboardingContext {
-  tenantId: string;
+{{#if multiTenant}}  tenantId: string;
   tenantName: string;
-  workflowId: string;
+{{else}}  userId: string;
+  email: string;
+{{/if}}  workflowId: string;
 }
 
 export function createActivities(deps: ActivityDeps) {
@@ -38,7 +41,7 @@ export function createActivities(deps: ActivityDeps) {
      * would give neither — a broker outage would fail the activity and Temporal
      * would retry it, publishing twice once the broker came back.
      */
-    async publishTenantActivated(context: OnboardingContext): Promise<void> {
+{{#if multiTenant}}    async publishTenantActivated(context: OnboardingContext): Promise<void> {
       await deps.database.runInTenantContext(context.tenantId, async (tx) => {
         await deps.outbox.publish(tx, TenantActivated, {
           aggregateId: context.tenantId,
@@ -69,6 +72,36 @@ export function createActivities(deps: ActivityDeps) {
       });
       deps.log.warn(`tenant ${context.tenantId} abandoned onboarding at ${lastStep}`);
     },
+{{else}}    async publishUserActivated(context: OnboardingContext): Promise<void> {
+      await deps.database.transaction(async (tx) => {
+        await deps.outbox.publish(tx, UserActivated, {
+          aggregateId: context.userId,
+          payload: {
+            workflowId: context.workflowId,
+            userId: context.userId,
+            email: context.email,
+            activatedAt: new Date().toISOString(),
+          },
+        });
+      });
+      deps.log.log(`user ${context.userId} activated`);
+    },
+
+    async publishOnboardingAbandoned(context: OnboardingContext, lastStep: string): Promise<void> {
+      await deps.database.transaction(async (tx) => {
+        await deps.outbox.publish(tx, UserOnboardingAbandoned, {
+          aggregateId: context.userId,
+          payload: {
+            workflowId: context.workflowId,
+            userId: context.userId,
+            lastStep,
+            abandonedAt: new Date().toISOString(),
+          },
+        });
+      });
+      deps.log.warn(`user ${context.userId} abandoned onboarding at ${lastStep}`);
+    },
+{{/if}}
   };
 }
 

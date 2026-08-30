@@ -28,7 +28,8 @@ export interface EmailJob<T extends EmailTemplate = EmailTemplate> {
   data: TemplateData<T>;
   attachments?: EmailAttachment[];
   /** Null for platform mail. Carried through so the worker can scope its logging. */
-  tenantId?: string | null;
+{{#if multiTenant}}  tenantId?: string | null;
+{{/if}}
 }
 
 /**

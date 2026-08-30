@@ -38,13 +38,17 @@ export class BillingProcessor {
     const due = await this.subs.dueForBilling(now);
     this.log.log(`billing run: ${due.length} subscription(s) to consider`);
 
-    for (const { subscription, plan, tenantName } of due) {
+    for (const { subscription, plan, accountName } of due) {
       try {
-        await this.process(subscription, plan, tenantName, now);
+        await this.process(subscription, plan, accountName, now);
       } catch (err) {
-        // One tenant's failure must not stop the run for everyone else.
+{{#if multiTenant}}        // One tenant's failure must not stop the run for everyone else.
+{{else}}        // One customer's failure must not stop the run for everyone else.
+{{/if}}
         this.log.error(
-          `billing failed for tenant ${subscription.tenantId}: ${err instanceof Error ? err.message : String(err)}`,
+{{#if multiTenant}}          `billing failed for tenant ${subscription.tenantId}: ${err instanceof Error ? err.message : String(err)}`,
+{{else}}          `billing failed for user ${subscription.userId}: ${err instanceof Error ? err.message : String(err)}`,
+{{/if}}
         );
       }
     }
@@ -53,7 +57,7 @@ export class BillingProcessor {
   private async process(
     subscription: typeof subscriptions.$inferSelect,
     plan: typeof plans.$inferSelect,
-    tenantName: string,
+    accountName: string,
     now: Date,
   ): Promise<void> {
     const base = {
@@ -61,7 +65,7 @@ export class BillingProcessor {
       planName: plan.name,
       amount: plan.amount,
       currency: plan.currency,
-      tenantName,
+      accountName,
       billingEmail: subscription.billingEmail,
     };
 
@@ -70,14 +74,19 @@ export class BillingProcessor {
     if (subscription.status === 'trialing' && subscription.trialEndsAt) {
       const daysLeft = Math.ceil((subscription.trialEndsAt.getTime() - now.getTime()) / 86_400_000);
       if (daysLeft <= TRIAL_WARNING_DAYS && daysLeft > 0) {
-        await this.announce(subscription.tenantId, async (tx) => {
+{{#if multiTenant}}        await this.announce(subscription.tenantId, async (tx) => {
+{{else}}        await this.announce(async (tx) => {
+{{/if}}
           await this.outbox.publish(tx, TrialEnding, {
             aggregateId: subscription.id,
-            tenantId: subscription.tenantId,
+{{#if multiTenant}}            tenantId: subscription.tenantId,
+{{/if}}
             payload: { ...base, daysLeft },
           });
         });
-        this.log.log(`trial for ${subscription.tenantId} ends in ${daysLeft} day(s)`);
+{{#if multiTenant}}        this.log.log(`trial for ${subscription.tenantId} ends in ${daysLeft} day(s)`);
+{{else}}        this.log.log(`trial for ${subscription.userId} ends in ${daysLeft} day(s)`);
+{{/if}}
       }
       return;
     }
@@ -88,7 +97,8 @@ export class BillingProcessor {
       await this.setStatus(subscription, 'cancelled', { cancelledAt: now }, async (tx) => {
         await this.outbox.publish(tx, SubscriptionCancelled, {
           aggregateId: subscription.id,
-          tenantId: subscription.tenantId,
+{{#if multiTenant}}          tenantId: subscription.tenantId,
+{{/if}}
           payload: { ...base, endedAt: now.toISOString() },
         });
       });
@@ -111,7 +121,8 @@ export class BillingProcessor {
       await this.setStatus(subscription, 'suspended', {}, async (tx) => {
         await this.outbox.publish(tx, SubscriptionSuspended, {
           aggregateId: subscription.id,
-          tenantId: subscription.tenantId,
+{{#if multiTenant}}          tenantId: subscription.tenantId,
+{{/if}}
           payload: base,
         });
       });
@@ -125,7 +136,9 @@ export class BillingProcessor {
     const attempt = DUNNING_SCHEDULE.filter((s) => s.afterDays <= overdueDays).length;
     const nextStatus = subscription.status === 'active' ? 'past_due' : null;
 
-    await this.announce(subscription.tenantId, async (tx) => {
+{{#if multiTenant}}    await this.announce(subscription.tenantId, async (tx) => {
+{{else}}    await this.announce(async (tx) => {
+{{/if}}
       if (nextStatus) {
         await tx
           .update(subscriptions)
@@ -139,7 +152,8 @@ export class BillingProcessor {
       if (!step.notify) return;
       await this.outbox.publish(tx, SubscriptionPaymentRequested, {
         aggregateId: subscription.id,
-        tenantId: subscription.tenantId,
+{{#if multiTenant}}        tenantId: subscription.tenantId,
+{{/if}}
         payload: {
           ...base,
           dueDate: subscription.currentPeriodEnd.toISOString().slice(0, 10),
@@ -151,8 +165,12 @@ export class BillingProcessor {
   }
 
   /** One transaction, so the event and whatever it describes commit together. */
-  private announce(tenantId: string, fn: (tx: TenantTx) => Promise<void>): Promise<void> {
-    return this.database.runInTenantContext(tenantId, fn);
+{{#if multiTenant}}  private announce(tenantId: string, fn: (tx: TenantTx) => Promise<void>): Promise<void> {
+{{else}}  private announce(fn: (tx: TenantTx) => Promise<void>): Promise<void> {
+{{/if}}
+{{#if multiTenant}}    return this.database.runInTenantContext(tenantId, fn);
+{{else}}    return this.database.transaction(fn);
+{{/if}}
   }
 
   /**
@@ -167,7 +185,9 @@ export class BillingProcessor {
     extra: Record<string, unknown>,
     announce?: (tx: TenantTx) => Promise<void>,
   ): Promise<void> {
-    await this.database.runInTenantContext(subscription.tenantId, async (tx) => {
+{{#if multiTenant}}    await this.database.runInTenantContext(subscription.tenantId, async (tx) => {
+{{else}}    await this.database.transaction(async (tx) => {
+{{/if}}
       await tx
         .update(subscriptions)
         .set({ status, updatedAt: new Date(), ...extra })

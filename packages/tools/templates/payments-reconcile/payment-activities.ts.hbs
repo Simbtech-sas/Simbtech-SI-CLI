@@ -15,7 +15,8 @@ export interface PaymentRef {
   provider: string;
   reference: string;
   externalId?: string;
-  tenantId: string;
+{{#if multiTenant}}  tenantId: string;
+{{/if}}
   amount: string;
   currency: string;
 }
@@ -68,8 +69,12 @@ export function createPaymentActivities(deps: PaymentActivityDeps) {
         return false;
       }
 
-      await deps.database.runInTenantContext(payment.tenantId, async (tx) => {
-        await deps.publisher.publishReconciled(tx, event, payment.tenantId, afterSeconds);
+{{#if multiTenant}}      await deps.database.runInTenantContext(payment.tenantId, async (tx) => {
+{{else}}      await deps.database.transaction(async (tx) => {
+{{/if}}
+{{#if multiTenant}}        await deps.publisher.publishReconciled(tx, event, payment.tenantId, afterSeconds);
+{{else}}        await deps.publisher.publishReconciled(tx, event, afterSeconds);
+{{/if}}
       });
       // Worth a warning, not a log line: this is a webhook that never arrived.
       deps.log.warn(

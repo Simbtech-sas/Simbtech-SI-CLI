@@ -22,7 +22,8 @@ export class JoonapayPaymentsRepository implements OnModuleInit {
 
   /** Record a payment we just started. */
   async record(
-    tenantId: string,
+{{#if multiTenant}}    tenantId: string,
+{{/if}}
     row: {
       joonapayUuid: string;
       reference: string;
@@ -35,11 +36,14 @@ export class JoonapayPaymentsRepository implements OnModuleInit {
       metadata?: Record<string, unknown> | null;
     },
   ): Promise<void> {
-    await this.database.runInTenantContext(tenantId, async (tx) => {
+{{#if multiTenant}}    await this.database.runInTenantContext(tenantId, async (tx) => {
+{{else}}    await this.database.transaction(async (tx) => {
+{{/if}}
       const inserted = await tx
         .insert(joonapayPayments)
         .values({
-          tenantId,
+{{#if multiTenant}}          tenantId,
+{{/if}}
           joonapayUuid: row.joonapayUuid,
           reference: row.reference,
           externalId: row.externalId,
@@ -67,7 +71,8 @@ export class JoonapayPaymentsRepository implements OnModuleInit {
           currency: row.currency,
           paymentUrl: row.checkoutUrl ?? undefined,
         },
-        tenantId,
+{{#if multiTenant}}        tenantId,
+{{/if}}
       );
     });
   }
@@ -75,9 +80,13 @@ export class JoonapayPaymentsRepository implements OnModuleInit {
   /**
    * Apply a terminal state. Returns false when it was already applied.
    *
-   * Runs on the ADMIN connection: a webhook carries no tenant context — JoonaPay
+{{#if multiTenant}}   * Runs on the ADMIN connection: a webhook carries no tenant context — JoonaPay
    * knows nothing about our tenants — so the row is found by JoonaPay's own
    * reference and the tenant is read from it, never taken from the payload.
+{{else}}   * Located by JoonaPay's own reference. Nothing in the payload decides which
+   * row moves — a webhook is attacker-reachable, and the reference is the only
+   * field of it we trust, because we sent it.
+{{/if}}
    *
    * The idempotency guard is the status column. Only a non-terminal row moves,
    * so a redelivery matches nothing and changes nothing. Doing it as one
@@ -101,10 +110,12 @@ export class JoonapayPaymentsRepository implements OnModuleInit {
             inArray(joonapayPayments.status, ['pending', 'processing']),
           ),
         )
-        // The tenant comes from OUR row, never from the payload: JoonaPay knows
+{{#if multiTenant}}        // The tenant comes from OUR row, never from the payload: JoonaPay knows
         // nothing about our tenants, so anything tenant-shaped in a webhook is
         // attacker-controlled.
-        .returning({ id: joonapayPayments.id, tenantId: joonapayPayments.tenantId });
+{{/if}}{{#if multiTenant}}        .returning({ id: joonapayPayments.id, tenantId: joonapayPayments.tenantId });
+{{else}}        .returning({ id: joonapayPayments.id });
+{{/if}}
 
       const row = updated[0];
       if (!row) return false;
@@ -112,7 +123,9 @@ export class JoonapayPaymentsRepository implements OnModuleInit {
       // Same transaction as the status change. A redelivery moves no row and so
       // publishes nothing — the database and every consumer stay idempotent
       // together, rather than the database alone.
-      await this.publisher.publish(tx, event, row.tenantId);
+{{#if multiTenant}}      await this.publisher.publish(tx, event, row.tenantId);
+{{else}}      await this.publisher.publish(tx, event);
+{{/if}}
       return true;
     });
   }
@@ -127,8 +140,12 @@ export class JoonapayPaymentsRepository implements OnModuleInit {
     return row;
   }
 
-  async findByExternalId(tenantId: string, externalId: string) {
-    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{#if multiTenant}}  async findByExternalId(tenantId: string, externalId: string) {
+{{else}}  async findByExternalId(externalId: string) {
+{{/if}}
+{{#if multiTenant}}    return this.database.runInTenantContext(tenantId, async (tx) => {
+{{else}}    return this.database.transaction(async (tx) => {
+{{/if}}
       const [row] = await tx
         .select()
         .from(joonapayPayments)

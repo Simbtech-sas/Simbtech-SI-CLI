@@ -26,7 +26,8 @@ export interface ProviderCapabilities {
 }
 
 export interface ChargeRequest {
-  tenantId: string;
+{{#if multiTenant}}  tenantId: string;
+{{/if}}
   /** Our id. Used as the provider's idempotency key. */
   externalId: string;
   /** Decimal string. Never a float — that rule holds across every provider. */

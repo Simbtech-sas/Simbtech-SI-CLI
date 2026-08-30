@@ -48,11 +48,13 @@ export class PaymentPublisher {
       currency: string;
       paymentUrl?: string;
     },
-    tenantId: string,
+{{#if multiTenant}}    tenantId: string,
+{{/if}}
   ): Promise<void> {
     await this.outbox.publish(tx, PaymentRequested, {
       aggregateId: payment.reference,
-      tenantId,
+{{#if multiTenant}}      tenantId,
+{{/if}}
       payload: { ...payment, occurredAt: new Date().toISOString() },
     });
   }
@@ -67,12 +69,14 @@ export class PaymentPublisher {
   async publishReconciled(
     tx: TenantTx,
     event: ProviderEvent & { state: 'settled' | 'failed' | 'cancelled' },
-    tenantId: string,
+{{#if multiTenant}}    tenantId: string,
+{{/if}}
     afterSeconds: number,
   ): Promise<void> {
     await this.outbox.publish(tx, PaymentReconciled, {
       aggregateId: event.reference,
-      tenantId,
+{{#if multiTenant}}      tenantId,
+{{/if}}
       payload: {
         provider: event.provider,
         reference: event.reference,
@@ -86,10 +90,14 @@ export class PaymentPublisher {
     });
     // The normal event too, so consumers that settle invoices need no special
     // case for "this one came from a poll".
-    await this.publish(tx, event, tenantId);
+{{#if multiTenant}}    await this.publish(tx, event, tenantId);
+{{else}}    await this.publish(tx, event);
+{{/if}}
   }
 
-  async publish(tx: TenantTx, event: ProviderEvent, tenantId: string): Promise<void> {
+{{#if multiTenant}}  async publish(tx: TenantTx, event: ProviderEvent, tenantId: string): Promise<void> {
+{{else}}  async publish(tx: TenantTx, event: ProviderEvent): Promise<void> {
+{{/if}}
     const payload = {
       provider: event.provider,
       reference: event.reference,
@@ -103,13 +111,15 @@ export class PaymentPublisher {
       case 'settled':
         return this.outbox.publish(tx, PaymentSettled, {
           aggregateId: event.reference,
-          tenantId,
+{{#if multiTenant}}          tenantId,
+{{/if}}
           payload,
         });
       case 'failed':
         return this.outbox.publish(tx, PaymentFailed, {
           aggregateId: event.reference,
-          tenantId,
+{{#if multiTenant}}          tenantId,
+{{/if}}
           payload: { ...payload, reason: event.failureReason ?? null },
         });
       case 'cancelled':
@@ -117,7 +127,8 @@ export class PaymentPublisher {
         // is chased — which is a different downstream reaction entirely.
         return this.outbox.publish(tx, PaymentCancelled, {
           aggregateId: event.reference,
-          tenantId,
+{{#if multiTenant}}          tenantId,
+{{/if}}
           payload: { ...payload, reason: event.failureReason ?? null },
         });
       default:

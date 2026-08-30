@@ -14,7 +14,7 @@ const workflowBase = z.object({
   runId: z.string().optional(),
 });
 
-export const TenantActivated = defineEvent({
+{{#if multiTenant}}export const TenantActivated = defineEvent({
   service: '{{brand}}',
   aggregate: 'onboarding',
   type: 'TenantActivated',
@@ -43,7 +43,37 @@ export const TenantOnboardingAbandoned = defineEvent({
   }),
 });
 
-export const WORKFLOW_EVENTS = {
-  TenantActivated,
+{{else}}
+export const UserActivated = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'user',
+  type: 'UserActivated',
+  version: 1,
+  schema: z.object({
+    workflowId: z.string(),
+    userId: z.string().uuid(),
+    email: z.string().email(),
+    activatedAt: z.string().datetime(),
+  }),
+});
+
+export const UserOnboardingAbandoned = defineEvent({
+  service: '{{brand}}',
+  aggregate: 'user',
+  type: 'UserOnboardingAbandoned',
+  version: 1,
+  schema: z.object({
+    workflowId: z.string(),
+    userId: z.string().uuid(),
+    lastStep: z.string(),
+    abandonedAt: z.string().datetime(),
+  }),
+});
+
+{{/if}}export const WORKFLOW_EVENTS = {
+{{#if multiTenant}}  TenantActivated,
   TenantOnboardingAbandoned,
+{{else}}  UserActivated,
+  UserOnboardingAbandoned,
+{{/if}}
 } as const satisfies Record<string, EventContract>;

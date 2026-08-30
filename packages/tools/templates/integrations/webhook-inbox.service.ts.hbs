@@ -88,9 +88,10 @@ export class WebhookInbox {
 
       await this.outbox.publish(tx, IntegrationEventReceived, {
         aggregateId: `${source.id}:${deliveryId}`,
-        // No tenant: the tool does not know about ours. A consumer that needs
+{{#if multiTenant}}        // No tenant: the tool does not know about ours. A consumer that needs
         // one resolves it from the payload, where it can be checked.
         tenantId: null,
+{{/if}}
         payload: {
           source: source.id,
           event,

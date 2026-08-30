@@ -40,8 +40,11 @@ CREATE TABLE "plans" (
 
 CREATE TABLE "subscriptions" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
-	"plan_id" uuid NOT NULL REFERENCES "plans"("id"),
+{{#if multiTenant}}	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+{{else}}	-- A subscription belongs to a user. There is no organisation above them to
+	-- bill, so the person who signed up is the person who pays.
+	"user_id" uuid NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
+{{/if}}	"plan_id" uuid NOT NULL REFERENCES "plans"("id"),
 	"status" "subscription_status" DEFAULT 'trialing' NOT NULL,
 	"current_period_start" timestamp with time zone NOT NULL,
 	"current_period_end" timestamp with time zone NOT NULL,
@@ -57,16 +60,23 @@ CREATE TABLE "subscriptions" (
 	"billing_email" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
-	-- One subscription per tenant. Multi-subscription billing is a different
+{{#if multiTenant}}	-- One subscription per tenant. Multi-subscription billing is a different
 	-- product; allowing it by accident makes entitlement ambiguous.
 	CONSTRAINT "one_subscription_per_tenant" UNIQUE ("tenant_id")
+{{else}}	-- One subscription per user. Multi-subscription billing is a different
+	-- product; allowing it by accident makes entitlement ambiguous.
+	CONSTRAINT "one_subscription_per_user" UNIQUE ("user_id")
+{{/if}}
 );--> statement-breakpoint
 CREATE INDEX "subscriptions_renewal_idx" ON "subscriptions" ("current_period_end")
   WHERE "status" IN ('active', 'trialing', 'past_due');--> statement-breakpoint
 
 CREATE TABLE "subscription_invoices" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+{{#if multiTenant}}	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
+{{/if}}	-- Who an invoice is for is reachable through the subscription. The column
+	-- above exists so RLS has something on THIS table to scope by; without RLS
+	-- there is nothing for it to do.
 	"subscription_id" uuid NOT NULL REFERENCES "subscriptions"("id") ON DELETE CASCADE,
 	"number" text NOT NULL UNIQUE,
 	"status" "invoice_status" DEFAULT 'draft' NOT NULL,
@@ -86,10 +96,12 @@ CREATE TABLE "subscription_invoices" (
 	-- One invoice per period. The guard against double-charging on a retried job.
 	CONSTRAINT "one_invoice_per_period" UNIQUE ("subscription_id", "period_start")
 );--> statement-breakpoint
-CREATE INDEX "invoices_tenant_idx" ON "subscription_invoices" ("tenant_id", "created_at");--> statement-breakpoint
+{{#if multiTenant}}CREATE INDEX "invoices_tenant_idx" ON "subscription_invoices" ("tenant_id", "created_at");--> statement-breakpoint
+{{else}}CREATE INDEX "invoices_created_idx" ON "subscription_invoices" ("created_at");--> statement-breakpoint
+{{/if}}
 CREATE INDEX "invoices_payment_ref_idx" ON "subscription_invoices" ("payment_reference");--> statement-breakpoint
 
--- Plans are shared across tenants, so they are NOT tenant-scoped.
+{{#if multiTenant}}-- Plans are shared across tenants, so they are NOT tenant-scoped.
 ALTER TABLE "subscriptions" ENABLE ROW LEVEL SECURITY;--> statement-breakpoint
 ALTER TABLE "subscriptions" FORCE ROW LEVEL SECURITY;--> statement-breakpoint
 CREATE POLICY "tenant_isolation" ON "subscriptions"
@@ -101,3 +113,6 @@ ALTER TABLE "subscription_invoices" FORCE ROW LEVEL SECURITY;--> statement-break
 CREATE POLICY "tenant_isolation" ON "subscription_invoices"
 	USING ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid)
 	WITH CHECK ("tenant_id" = nullif(current_setting('app.tenant_id', true), '')::uuid);
+{{else}}-- No RLS. Which subscription a request may touch is decided by the service,
+-- against the caller's own user id — see subscriptions.service.ts.
+{{/if}}

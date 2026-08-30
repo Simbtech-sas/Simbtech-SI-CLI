@@ -1,8 +1,11 @@
 -- Second factors, recovery codes and known devices.
 --
--- NOT tenant-scoped: a user authenticates before a tenant is known, and scoping
+{{#if multiTenant}}-- NOT tenant-scoped: a user authenticates before a tenant is known, and scoping
 -- these by tenant would make the second factor unreadable at exactly the moment
 -- it is needed.
+{{else}}-- Keyed by user. A second factor has to be readable before the user is fully
+-- authenticated, which is exactly when it is needed.
+{{/if}}
 CREATE TABLE "mfa_enrolments" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" uuid NOT NULL UNIQUE REFERENCES "users"("id") ON DELETE CASCADE,

@@ -8,5 +8,7 @@
  *
  * One string, two importers, no sandbox leaking into Nest.
  */
-export const TENANT_ONBOARDING = 'tenantOnboarding';
+{{#if multiTenant}}export const TENANT_ONBOARDING = 'tenantOnboarding';
+{{else}}export const USER_ONBOARDING = 'userOnboarding';
+{{/if}}
 export const EMAIL_VERIFIED_SIGNAL = 'emailVerified';

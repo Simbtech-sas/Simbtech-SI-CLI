@@ -116,37 +116,46 @@ closing `*/` deletes it and the comment swallows the class below — `nest build
 catches it, nothing earlier does), and a variant file swapped in by one choice
 must be deleted by its siblings.
 
-## Payments, subscriptions and Temporal on a single-tenant build
+## Payments, subscriptions and Temporal on a single-tenant build — done
 
-`si new -f siapp --payments kpay` (and `--workflows temporal`, and the
-subscriptions feature) **refuses**, because the templates behind them are still
-written against a tenant and would scaffold a project that does not compile.
+All four compose into SiAPP now, and both flavours boot with every one of them
+wired in (`scripts/boot.sh payments-core payments-kpay payments-joonapay
+payments-reconcile temporal subscriptions`).
 
-What is coupled, and how:
+Tool templates are Handlebars rather than marker-pruned, so a tenancy-dependent
+one branches on `{{#if multiTenant}}`. `si new` passes the choice through;
+`si add` reads it back off `.si/project.json`, defaulting to multi-tenant when
+there is no record — a project scaffolded before the field existed is a SiSAAS
+one, and guessing the other way would strip a tenant column out of a project
+that has one.
 
-| Tool | Why it does not compose yet |
-|---|---|
-| `payments-kpay`, `payments-joonapay` | `tenant_id NOT NULL REFERENCES tenants`, an RLS policy, a `(tenant_id, external_id)` unique constraint, and a repository that opens `runInTenantContext` |
-| `payments-reconcile` | the workflow id and the activities key on a tenant |
-| `subscriptions` | `one_subscription_per_tenant`, tenant-scoped invoices, a processor and a controller that both read a tenant id |
-| `temporal` | the activities open a tenant context, and the shipped example workflow is *tenant onboarding* |
+What the single-tenant shapes came out as:
 
-Roughly 230 tenant-touching lines across 30 template files — the same marker
-treatment the main template has now had, no new technique required. Payments and
-Temporal are mechanical: drop the column, drop the policy, drop the context.
+- **Payments** — no `tenant_id`, no RLS policy, `UNIQUE (external_id)` instead of
+  `(tenant_id, external_id)`.
+- **Subscriptions** — a subscription belongs to a **user**
+  (`one_subscription_per_user`). Invoices reach their owner through
+  `subscription_id`; the `tenant_id` on that table only ever existed so RLS had
+  something on it to scope by.
+- **Temporal** — the workflow id loses its tenant segment, and the worked example
+  becomes user onboarding rather than tenant onboarding. Same seven-day timer,
+  same lesson, a subject the flavour actually has.
+- **LiveKit** — rooms lose the tenant prefix that was doing the isolating, and the
+  docstring now says plainly that the guard issuing the token is the boundary.
+- **Blnk** — one ledger for the app, `owner_id` in balance metadata.
 
-**Subscriptions needs a decision first, and it is a product one:** in a
-single-tenant app, who owns a subscription? Per-user is the usual answer for a
-normal web app that bills its users, and would make it `subscriptions.user_id`
-with `one_subscription_per_user`. But a single-org internal tool might instead
-have exactly one subscription for the whole installation. These are different
-schemas and different dunning behaviour, so the question is worth asking rather
-than guessing.
+One root-cause fix worth naming: `requireAdminDb()` returns the ordinary
+connection in a single-tenant build instead of throwing. It is asked for by
+webhook inboxes, MFA, payment reconcilers — everything that runs before a request
+context exists — and in a build with no RLS the plain connection already IS the
+unconfined one. That is 27 call sites across tools that did not each need a
+branch, and `auth-mfa` and `integrations` were both about to throw at runtime on
+a missing `ADMIN_DATABASE_URL` that SiAPP no longer sets.
 
-Two gates hold the line meanwhile: `si new` refuses these combinations before
-writing anything, and a test derives the coupled set from the templates
-themselves and fails if `TENANT_COUPLED_TOOLS` drifts in either direction — so
-fixing a template and forgetting to un-refuse it is caught too.
+The gate: every one of the 128 tool templates is rendered both ways on every test
+run, and fails if it does not parse or if the single-tenant render still says
+"tenant". It caught eleven files, including `{{/if}}}` parsing as a triple-stache
+and four tools nobody had flagged.
 
 ## Compliance
 

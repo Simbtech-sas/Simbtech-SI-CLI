@@ -1,7 +1,8 @@
 import { boolean, index, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { tenants } from './tenants';
-
+{{#if multiTenant}}import { tenants } from './tenants';
+{{else}}import { users } from './identity';
+{{/if}}
 export const billingInterval = pgEnum('billing_interval', ['month', 'year']);
 
 /**
@@ -28,7 +29,9 @@ export const invoiceStatus = pgEnum('invoice_status', [
   'void',
 ]);
 
-/** Shared across tenants, so NOT tenant-scoped. */
+{{#if multiTenant}}/** Shared across tenants, so NOT tenant-scoped. */
+{{else}}/** Shared by everyone on the instance. */
+{{/if}}
 export const plans = pgTable('plans', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   /** Stable identifier used in code. The name may change; this must not. */
@@ -49,10 +52,14 @@ export const subscriptions = pgTable(
   'subscriptions',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-    tenantId: uuid('tenant_id')
+{{#if multiTenant}}    tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    planId: uuid('plan_id')
+{{else}}    /** Who pays. There is no organisation above them to bill. */
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+{{/if}}    planId: uuid('plan_id')
       .notNull()
       .references(() => plans.id),
     status: subscriptionStatus('status').notNull().default('trialing'),
@@ -69,17 +76,19 @@ export const subscriptions = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [unique('one_subscription_per_tenant').on(t.tenantId)],
+{{#if multiTenant}}  (t) => [unique('one_subscription_per_tenant').on(t.tenantId)],
+{{else}}  (t) => [unique('one_subscription_per_user').on(t.userId)],
+{{/if}}
 );
 
 export const subscriptionInvoices = pgTable(
   'subscription_invoices',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-    tenantId: uuid('tenant_id')
+{{#if multiTenant}}    tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id, { onDelete: 'cascade' }),
-    subscriptionId: uuid('subscription_id')
+{{/if}}    subscriptionId: uuid('subscription_id')
       .notNull()
       .references(() => subscriptions.id, { onDelete: 'cascade' }),
     number: text('number').notNull().unique(),
@@ -98,7 +107,9 @@ export const subscriptionInvoices = pgTable(
   (t) => [
     // One invoice per period — the guard against double-charging on a retried job.
     unique('one_invoice_per_period').on(t.subscriptionId, t.periodStart),
-    index('invoices_tenant_idx').on(t.tenantId, t.createdAt),
+{{#if multiTenant}}    index('invoices_tenant_idx').on(t.tenantId, t.createdAt),
+{{else}}    index('invoices_created_idx').on(t.createdAt),
+{{/if}}
     index('invoices_payment_ref_idx').on(t.paymentReference),
   ],
 );

@@ -15,7 +15,7 @@ import { formatMoney } from './documents';
  */
 export interface BillingContext {
   name: string | null;
-  tenantName: string;
+  accountName: string;
   planName: string;
   amount: string;
   currency: string;
@@ -26,7 +26,8 @@ export interface BillingContext {
 export interface TemplateMap {
   'password-reset': { name: string | null; resetUrl: string; expiresInMinutes: number };
   'email-verification': { name: string | null; verifyUrl: string };
-  invitation: { inviterName: string; tenantName: string; acceptUrl: string };
+  invitation: { inviterName: string; accountName: string; acceptUrl: string };
+
   welcome: { name: string | null; appUrl: string };
   'trial-ending': BillingContext & { daysLeft: number };
   /** The payment reminder. Sent at each `request-again` step of the dunning schedule. */
@@ -36,7 +37,7 @@ export interface TemplateMap {
   invoice: BillingContext & { number: string; dueDate: string };
   receipt: {
     name: string | null;
-    tenantName: string;
+    accountName: string;
     number: string;
     amount: string;
     currency: string;
@@ -104,11 +105,11 @@ export function renderTemplate<T extends EmailTemplate>(
     case 'invitation': {
       const d = data as TemplateMap['invitation'];
       return {
-        subject: `${d.inviterName} invited you to ${d.tenantName}`,
-        text: `${d.inviterName} invited you to join ${d.tenantName}.\n\n${d.acceptUrl}`,
+        subject: `${d.inviterName} invited you to ${d.accountName}`,
+        text: `${d.inviterName} invited you to join ${d.accountName}.\n\n${d.acceptUrl}`,
         html: layout(
-          `Join ${esc(d.tenantName)}`,
-          `<p>${esc(d.inviterName)} invited you to join <strong>${esc(d.tenantName)}</strong>.</p>`,
+          `Join ${esc(d.accountName)}`,
+          `<p>${esc(d.inviterName)} invited you to join <strong>${esc(d.accountName)}</strong>.</p>`,
           { label: 'Accept invitation', url: d.acceptUrl },
         ),
       };
@@ -129,11 +130,11 @@ export function renderTemplate<T extends EmailTemplate>(
       const price = formatMoney(d.amount, d.currency);
       return {
         subject: d.daysLeft === 1 ? 'Your trial ends tomorrow' : `Your trial ends in ${d.daysLeft} days`,
-        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nYour ${d.planName} trial for ${d.tenantName} ends in ${d.daysLeft} day(s). After that it renews at ${price}.\n\nNothing is charged automatically — you will get a payment request when the trial ends.${d.payUrl ? `\n\n${d.payUrl}` : ''}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nYour ${d.planName} trial for ${d.accountName} ends in ${d.daysLeft} day(s). After that it renews at ${price}.\n\nNothing is charged automatically — you will get a payment request when the trial ends.${d.payUrl ? `\n\n${d.payUrl}` : ''}`,
         html: layout(
           `Your trial ends in ${d.daysLeft} day${d.daysLeft === 1 ? '' : 's'}`,
           `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
-           <p>Your <strong>${esc(d.planName)}</strong> trial for ${esc(d.tenantName)} ends in ${d.daysLeft} day${d.daysLeft === 1 ? '' : 's'}. After that it renews at <strong>${price}</strong>.</p>
+           <p>Your <strong>${esc(d.planName)}</strong> trial for ${esc(d.accountName)} ends in ${d.daysLeft} day${d.daysLeft === 1 ? '' : 's'}. After that it renews at <strong>${price}</strong>.</p>
            <p style="color:#737373">Nothing is charged automatically — you will get a payment request when the trial ends.</p>`,
           d.payUrl ? { label: 'Review your plan', url: d.payUrl } : undefined,
         ),
@@ -147,13 +148,13 @@ export function renderTemplate<T extends EmailTemplate>(
       const reminder = d.attempt > 1;
       return {
         subject: reminder
-          ? `Reminder: ${price} due for ${d.tenantName}`
-          : `${price} due for ${d.tenantName}`,
-        text: `Hello${d.name ? ` ${d.name}` : ''},\n\n${reminder ? 'This is a reminder that your' : 'Your'} ${d.planName} subscription for ${d.tenantName} is due: ${price}, by ${d.dueDate}.\n\n${d.ussdHint ?? ''}${d.payUrl ? `\n${d.payUrl}` : ''}\n\nAccess continues for ${d.daysUntilSuspension} more day(s) while this is outstanding.`,
+          ? `Reminder: ${price} due for ${d.accountName}`
+          : `${price} due for ${d.accountName}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\n${reminder ? 'This is a reminder that your' : 'Your'} ${d.planName} subscription for ${d.accountName} is due: ${price}, by ${d.dueDate}.\n\n${d.ussdHint ?? ''}${d.payUrl ? `\n${d.payUrl}` : ''}\n\nAccess continues for ${d.daysUntilSuspension} more day(s) while this is outstanding.`,
         html: layout(
           reminder ? 'Payment reminder' : 'Payment due',
           `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
-           <p>${reminder ? 'This is a reminder that your' : 'Your'} <strong>${esc(d.planName)}</strong> subscription for ${esc(d.tenantName)} is due: <strong>${price}</strong>, by ${esc(d.dueDate)}.</p>
+           <p>${reminder ? 'This is a reminder that your' : 'Your'} <strong>${esc(d.planName)}</strong> subscription for ${esc(d.accountName)} is due: <strong>${price}</strong>, by ${esc(d.dueDate)}.</p>
            ${d.ussdHint ? `<p>${esc(d.ussdHint)}</p>` : ''}
            <p style="color:#737373">Access continues for ${d.daysUntilSuspension} more day${d.daysUntilSuspension === 1 ? '' : 's'} while this is outstanding.</p>`,
           d.payUrl ? { label: 'Pay now', url: d.payUrl } : undefined,
@@ -165,11 +166,11 @@ export function renderTemplate<T extends EmailTemplate>(
       const price = formatMoney(d.amount, d.currency);
       return {
         subject: `Payment of ${price} did not go through`,
-        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nThe ${price} payment for ${d.tenantName} did not complete.${d.reason ? `\n\nReason: ${d.reason}` : ''}\n\nWe will ask again. Access continues for ${d.daysUntilSuspension} more day(s).${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nThe ${price} payment for ${d.accountName} did not complete.${d.reason ? `\n\nReason: ${d.reason}` : ''}\n\nWe will ask again. Access continues for ${d.daysUntilSuspension} more day(s).${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}`,
         html: layout(
           'Payment did not go through',
           `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
-           <p>The <strong>${price}</strong> payment for ${esc(d.tenantName)} did not complete.</p>
+           <p>The <strong>${price}</strong> payment for ${esc(d.accountName)} did not complete.</p>
            ${d.reason ? `<p style="color:#737373">Reason: ${esc(d.reason)}</p>` : ''}
            <p>We will ask again. Access continues for ${d.daysUntilSuspension} more day${d.daysUntilSuspension === 1 ? '' : 's'}.</p>
            ${d.ussdHint ? `<p>${esc(d.ussdHint)}</p>` : ''}`,
@@ -181,12 +182,12 @@ export function renderTemplate<T extends EmailTemplate>(
       const d = data as TemplateMap['subscription-suspended'];
       const price = formatMoney(d.amount, d.currency);
       return {
-        subject: `${d.tenantName} has been suspended`,
+        subject: `${d.accountName} has been suspended`,
         // Says plainly that the data is still there. That sentence is the whole
         // difference between a billing problem and a panicked support ticket.
-        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nAccess to ${d.tenantName} is suspended because ${price} is outstanding.\n\nYour data has NOT been deleted. Paying restores access immediately.${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}\n\nQuestions: ${d.supportEmail}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nAccess to ${d.accountName} is suspended because ${price} is outstanding.\n\nYour data has NOT been deleted. Paying restores access immediately.${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}\n\nQuestions: ${d.supportEmail}`,
         html: layout(
-          `${esc(d.tenantName)} is suspended`,
+          `${esc(d.accountName)} is suspended`,
           `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
            <p>Access is suspended because <strong>${price}</strong> is outstanding.</p>
            <p><strong>Your data has not been deleted.</strong> Paying restores access immediately.</p>
@@ -201,11 +202,11 @@ export function renderTemplate<T extends EmailTemplate>(
       const price = formatMoney(d.amount, d.currency);
       return {
         subject: `Invoice ${d.number} — ${price}`,
-        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nInvoice ${d.number} for ${d.tenantName}: ${price}, due ${d.dueDate}. It is attached.${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nInvoice ${d.number} for ${d.accountName}: ${price}, due ${d.dueDate}. It is attached.${d.ussdHint ? `\n\n${d.ussdHint}` : ''}${d.payUrl ? `\n${d.payUrl}` : ''}`,
         html: layout(
           `Invoice ${esc(d.number)}`,
           `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
-           <p><strong>${price}</strong> for ${esc(d.tenantName)}, due ${esc(d.dueDate)}. The invoice is attached.</p>
+           <p><strong>${price}</strong> for ${esc(d.accountName)}, due ${esc(d.dueDate)}. The invoice is attached.</p>
            ${d.ussdHint ? `<p>${esc(d.ussdHint)}</p>` : ''}`,
           d.payUrl ? { label: 'Pay invoice', url: d.payUrl } : undefined,
         ),
@@ -216,11 +217,11 @@ export function renderTemplate<T extends EmailTemplate>(
       const price = formatMoney(d.amount, d.currency);
       return {
         subject: `Receipt ${d.number} — ${price}`,
-        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nWe received ${price} for ${d.tenantName} on ${d.paidAt}.\n\nReference: ${d.reference}\nReceipt ${d.number} is attached.`,
+        text: `Hello${d.name ? ` ${d.name}` : ''},\n\nWe received ${price} for ${d.accountName} on ${d.paidAt}.\n\nReference: ${d.reference}\nReceipt ${d.number} is attached.`,
         html: layout(
           'Payment received',
           `<p>Hello${d.name ? ` ${esc(d.name)}` : ''},</p>
-           <p>We received <strong>${price}</strong> for ${esc(d.tenantName)} on ${esc(d.paidAt)}.</p>
+           <p>We received <strong>${price}</strong> for ${esc(d.accountName)} on ${esc(d.paidAt)}.</p>
            <p style="color:#737373">Reference: ${esc(d.reference)}<br>Receipt ${esc(d.number)} is attached.</p>`,
         ),
       };

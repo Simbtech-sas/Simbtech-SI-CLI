@@ -507,3 +507,56 @@ test('no compliance dataset names a customer organisation', async () => {
     }
   }
 });
+
+test('every tool template renders for both tenancies, with no tenant left in a single-tenant build', async () => {
+  // Tool templates are Handlebars, not marker-pruned, so a tenancy-dependent one
+  // branches on `{{#if multiTenant}}`. Two ways that goes wrong, both of which
+  // shipped before this test existed:
+  //
+  //   - a parse error, from `{{/if}}}` — Handlebars reads the three closing
+  //     braces as a triple-stache and the whole file fails to render;
+  //   - a branch that renders but still says "tenant", in a project that has
+  //     none. That compiles. It just describes a thing the app does not have.
+  const Handlebars = (await import('handlebars')).default;
+  const { readdir, readFile } = await import('node:fs/promises');
+  const root = new URL('../templates/', import.meta.url);
+
+  // Two things that say "tenant" and are not ours:
+  //   - `TenantTx`, the transaction type, which is named the same in both builds;
+  //   - Bigcapital's own multi-tenancy, which is a property of that product and
+  //     has nothing to do with whether OUR app has tenants.
+  const ALLOWED = /TenantTx|TENANT_DB_NAME_PERFIX|DATABASE PER TENANT/;
+  // SiMICE only; a single-tenant web app never sees it.
+  const SKIP_DIRS = new Set(['cloud-sync']);
+
+  let checked = 0;
+  for (const dir of await readdir(root, { withFileTypes: true })) {
+    if (!dir.isDirectory() || SKIP_DIRS.has(dir.name)) continue;
+    for (const file of await readdir(new URL(`${dir.name}/`, root))) {
+      const source = await readFile(new URL(`${dir.name}/${file}`, root), 'utf8');
+      for (const multiTenant of [true, false]) {
+        let rendered: string;
+        try {
+          rendered = Handlebars.compile(source, { noEscape: true })({ brand: 'x', multiTenant });
+        } catch (err) {
+          assert.fail(
+            `${dir.name}/${file} does not render with multiTenant=${multiTenant}: ` +
+              `${err instanceof Error ? err.message.split('\n')[0] : String(err)}`,
+          );
+        }
+        checked++;
+        if (multiTenant) continue;
+        const leaked = rendered
+          .split('\n')
+          .filter((l) => /tenant/i.test(l) && !ALLOWED.test(l));
+        assert.equal(
+          leaked.length,
+          0,
+          `${dir.name}/${file} still mentions a tenant in a single-tenant build:\n` +
+            leaked.slice(0, 3).map((l) => `    ${l.trim()}`).join('\n'),
+        );
+      }
+    }
+  }
+  assert.ok(checked > 100, `only rendered ${checked} templates — the walk is broken`);
+});

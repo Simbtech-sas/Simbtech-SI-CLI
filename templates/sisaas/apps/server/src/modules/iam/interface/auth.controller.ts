@@ -50,9 +50,13 @@ function isNativeClient(req: FastifyRequest): boolean {
 }
 
 @Controller('auth')
-// Credential endpoints only. The global 300/min limiter is sized for ordinary
-// API traffic and would happily allow 300 password guesses a minute.
-@UseGuards(LoginThrottleGuard)
+// The throttle goes on the CREDENTIAL routes, one by one — not on the class.
+//
+// At class level it also covered `me`, `profile`, `refresh` and `logout`, which
+// is 10 requests per 15 minutes for reading your own session. Worse, a GET has
+// no body, so every one of those requests keyed on the same `anonymous`
+// identifier and everybody behind one NAT shared a single budget. Two page
+// loads and the app told the user to come back later.
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
@@ -60,6 +64,7 @@ export class AuthController {
   ) {}
 
   @Post('register')
+  @UseGuards(LoginThrottleGuard)
   async register(
     @Body() dto: RegisterDto,
     @Req() req: FastifyRequest,
@@ -88,6 +93,7 @@ export class AuthController {
   // si:when-end
 
   @Post('login')
+  @UseGuards(LoginThrottleGuard)
   @HttpCode(200)
   async login(
     @Body() dto: LoginDto,
@@ -133,10 +139,17 @@ export class AuthController {
     return { ok: true };
   }
 
+  /**
+   * The session, in the same shape login and register return.
+   *
+   * NOT the raw token payload. That would ship `iat`, `exp` and `iss` to the
+   * browser and — worse — give the client a second, differently-shaped notion of
+   * "the session" to code against. One shape, three endpoints.
+   */
   @Get('me')
   @UseGuards(AccessGuard)
   me(@CurrentPrincipal() p: AccessTokenPayload) {
-    return p;
+    return this.auth.session(p);
   }
 
   @Get('profile')
@@ -156,6 +169,7 @@ export class AuthController {
   }
 
   @Post('password')
+  @UseGuards(LoginThrottleGuard)
   @UseGuards(AccessGuard)
   changePassword(
     @CurrentPrincipal() p: AccessTokenPayload,

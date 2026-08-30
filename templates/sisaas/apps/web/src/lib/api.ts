@@ -84,7 +84,7 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}, retry = 
 // ── Auth (example endpoints) ────────────────────────────────────────────────
 
 export interface Session {
-  user: { id: string; email: string };
+  user: { id: string; email: string; name: string | null };
   tenant: { id: string; slug: string; name: string }; // si:when multi-tenant
   role: 'owner' | 'admin' | 'member';
 }
@@ -103,8 +103,61 @@ export async function login(email: string, password: string): Promise<Session> {
   return { user: data.user, role: data.role }; // si:when single-tenant
 }
 
+/** POST /auth/register — creates the account and signs it in. */
+export async function register(input: {
+  email: string;
+  password: string;
+  name?: string;
+  tenantName: string; // si:when multi-tenant
+  slug: string; // si:when multi-tenant
+}): Promise<Session> {
+  const data = await apiFetch<AuthResponse>('/auth/register', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  saveToken(data.accessToken);
+  return { user: data.user, tenant: data.tenant, role: data.role }; // si:when multi-tenant
+  return { user: data.user, role: data.role }; // si:when single-tenant
+}
+
+// si:when-begin multi-tenant
+/** GET /auth/available — is this email / workspace address free? */
+export const checkAvailability = (q: { email?: string; slug?: string }) =>
+  apiFetch<{ emailAvailable?: boolean; slugAvailable?: boolean }>(
+    `/auth/available?${new URLSearchParams(
+      Object.entries(q).filter(([, v]) => v) as [string, string][],
+    )}`,
+  );
+// si:when-end
+// si:when-begin single-tenant
+/** GET /auth/available — is this email free? */
+export const checkAvailability = (q: { email?: string }) =>
+  apiFetch<{ emailAvailable?: boolean }>(
+    `/auth/available?${new URLSearchParams(
+      Object.entries(q).filter(([, v]) => v) as [string, string][],
+    )}`,
+  );
+// si:when-end
+
 /** GET /auth/me — the current session, or throws ApiError(401) if signed out. */
 export const me = () => apiFetch<Session>('/auth/me');
+
+export interface Profile {
+  id: string;
+  email: string;
+  name: string | null;
+}
+
+export const getProfile = () => apiFetch<Profile>('/auth/profile');
+
+export const updateProfile = (patch: { name?: string }) =>
+  apiFetch<void>('/auth/profile', { method: 'PATCH', body: JSON.stringify(patch) });
+
+export const changePassword = (currentPassword: string, newPassword: string) =>
+  apiFetch<{ ok: true }>('/auth/password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
 
 /** POST /auth/logout — best-effort server revoke, then clears the local token. */
 export async function logout(): Promise<void> {
@@ -115,3 +168,46 @@ export async function logout(): Promise<void> {
   }
   clearToken();
 }
+
+// ── Widgets (the reference feature) ─────────────────────────────────────────
+//
+// Copy this block alongside the module you copy from `modules/widgets` on the
+// server. The shapes mirror the DTOs, so a change there fails here at compile
+// time rather than at runtime in a form.
+
+export interface Widget {
+  id: string;
+  name: string;
+  description: string | null;
+  quantity: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WidgetInput {
+  name: string;
+  description?: string;
+  quantity?: number;
+}
+
+export const listWidgets = () => apiFetch<Widget[]>('/widgets');
+
+export const getWidget = (id: string) => apiFetch<Widget>(`/widgets/${id}`);
+
+/**
+ * The Idempotency-Key is not optional: the endpoint requires it, because a
+ * create that times out and is retried must not make a second widget. One key
+ * per logical operation — generated when the form opens, not per attempt.
+ */
+export const createWidget = (input: WidgetInput, idempotencyKey: string) =>
+  apiFetch<Widget>('/widgets', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: JSON.stringify(input),
+  });
+
+export const updateWidget = (id: string, patch: Partial<WidgetInput>) =>
+  apiFetch<Widget>(`/widgets/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+
+export const deleteWidget = (id: string) =>
+  apiFetch<void>(`/widgets/${id}`, { method: 'DELETE' });

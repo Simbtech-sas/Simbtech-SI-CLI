@@ -130,6 +130,38 @@ export class AuthService {
     await this.tokens.revoke(presented);
   }
 
+  /**
+   * The session for an already-verified principal.
+   *
+   * Reads the tenant/role back rather than echoing the token, so `GET /auth/me`
+   * hands the client exactly what login handed it. A client that has to handle
+   * two shapes for one concept will get one of them wrong.
+   */
+  // si:when-begin multi-tenant
+  async session(p: AccessTokenPayload) {
+    const [user, tenant] = await Promise.all([
+      this.repo.findUserById(p.sub),
+      this.repo.getTenantById(p.tenantId),
+    ]);
+    if (!user || !tenant) throw new UnauthorizedException();
+    return {
+      user: { id: user.id, email: user.email, name: user.name },
+      tenant: { id: tenant.id, slug: tenant.slug, name: tenant.name },
+      role: p.role,
+    };
+  }
+  // si:when-end
+  // si:when-begin single-tenant
+  async session(p: AccessTokenPayload) {
+    const user = await this.repo.findUserById(p.sub);
+    if (!user) throw new UnauthorizedException();
+    return {
+      user: { id: user.id, email: user.email, name: user.name },
+      role: user.role,
+    };
+  }
+  // si:when-end
+
   async getProfile(userId: string) {
     const user = await this.repo.findUserById(userId);
     if (!user) throw new UnauthorizedException();

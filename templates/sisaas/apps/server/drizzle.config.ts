@@ -18,9 +18,15 @@ export default defineConfig({
   out: './drizzle',
   dialect: 'postgresql',
   dbCredentials: {
+    // si:when-begin multi-tenant
     // Migrations run as the OWNER role (creates tables + RLS policies), never as
     // the RLS-constrained runtime role — and never as a superuser, which would
     // bypass the FORCE ROW LEVEL SECURITY the migrations install.
+    // si:when-end
+    // si:when-begin single-tenant
+    // Migrations run as the OWNER role, never as the runtime role: the role the
+    // API connects with should not be able to drop the tables it reads.
+    // si:when-end
     url:
       process.env.MIGRATION_DATABASE_URL ??
       process.env.DATABASE_URL ??

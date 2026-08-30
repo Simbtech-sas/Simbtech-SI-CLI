@@ -11,8 +11,9 @@ import { sql } from 'drizzle-orm';
 // type, payload) — lowercase and unsuffixed on purpose. Renaming them means
 // reconfiguring every Debezium connector.
 //
-// Not RLS-scoped, for the same reason audit_log is not: platform-level events
-// carry no tenant. Nothing serves these rows to users; only Debezium reads them.
+// Not RLS-scoped, for the same reason audit_log is not: platform-level events // si:when multi-tenant
+// carry no tenant. Nothing serves these rows to users; only Debezium reads them. // si:when multi-tenant
+// Nothing serves these rows to users; only Debezium reads them. // si:when single-tenant
 export const outboxEvents = pgTable(
   'outbox_events',
   {

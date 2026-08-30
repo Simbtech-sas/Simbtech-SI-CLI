@@ -4,15 +4,16 @@ import type { TenantTx } from '../../../database/database.service';
 import { widgets } from '../../../database/schema';
 import type { NewWidget, Widget, WidgetPatch } from '../domain/widget';
 
+// si:when-begin multi-tenant
+// That transaction always carries the tenant GUC (WidgetsService uses
+// runInTenantContext), so RLS confines these queries to the caller's tenant. No
+// query here needs — or is trusted to add — a manual `where tenant_id = ...`;
+// the database enforces it.
+// si:when-end
 /**
  * Pure data access. Every method takes the caller's transaction rather than
  * opening its own, so a service can write a row and its outbox event in ONE
  * unit of work — see WidgetsService.
- *
- * That transaction always carries the tenant GUC (WidgetsService uses
- * runInTenantContext), so RLS confines these queries to the caller's tenant. No
- * query here needs — or is trusted to add — a manual `where tenant_id = ...`;
- * the database enforces it.
  */
 @Injectable()
 export class WidgetsRepository {

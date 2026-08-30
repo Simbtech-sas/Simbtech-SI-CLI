@@ -25,8 +25,10 @@ const PBKDF2_ITERATIONS = 600_000; // OWASP 2023 guidance for PBKDF2-SHA256
  * a nonce with GCM is catastrophic: two messages under one nonce leak their XOR
  * and let an attacker forge tags.
  *
- * This is NOT a substitute for RLS or for TLS. It protects one thing: a copy of
- * the data taken without the key.
+ * This is NOT a substitute for RLS or for TLS. It protects one thing: a copy of // si:when multi-tenant
+ * This is NOT a substitute for an access check or for TLS. It protects one // si:when single-tenant
+ * thing: a copy of the data taken without the key. // si:when single-tenant
+ * the data taken without the key. // si:when multi-tenant
  */
 export class Encryption {
   // An explicit field rather than a parameter property: this file is deliberately

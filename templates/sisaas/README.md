@@ -1,8 +1,15 @@
 # Simbkit
 
+<!-- si:when-begin multi-tenant -->
 A multi-tenant SaaS monorepo skeleton: NestJS + Fastify API, Next.js web, Postgres
 with Row-Level Security, Redis/BullMQ, S3-compatible storage. The business logic
 is yours to add — the architecture is already here.
+<!-- si:when-end -->
+<!-- si:when-begin single-tenant -->
+A web app monorepo skeleton: NestJS + Fastify API, Next.js web, Postgres,
+Redis/BullMQ, S3-compatible storage. The business logic is yours to add — the
+architecture is already here.
+<!-- si:when-end -->
 
 ## Stack
 
@@ -10,7 +17,8 @@ is yours to add — the architecture is already here.
 |-------|------|
 | Monorepo | pnpm workspaces + Turborepo |
 | API | NestJS 11 on Fastify, DDD module layout |
-| DB | Postgres 17 + Drizzle ORM, **RLS tenant isolation** |
+| DB | Postgres 17 + Drizzle ORM, **RLS tenant isolation** | <!-- si:when multi-tenant -->
+| DB | Postgres 17 + Drizzle ORM | <!-- si:when single-tenant -->
 | Cache/Jobs | Redis + BullMQ (separate worker process) |
 | Realtime | Socket.IO (+ Redis adapter for multi-node) |
 | Storage | S3 / MinIO (in-memory stub when unset) |
@@ -36,13 +44,15 @@ apps/
   web/      Next.js app
 packages/
   config/   shared tsconfig base
-infra/      docker-compose + Postgres RLS role init
+infra/      docker-compose + Postgres RLS role init <!-- si:when multi-tenant -->
+infra/      docker-compose + Postgres role init <!-- si:when single-tenant -->
 ```
 
 ## Adding a feature
 
 Copy the `widgets` module (`apps/server/src/modules/widgets/`) and its schema
 (`apps/server/src/database/schema/widgets.ts`). It is the reference for the
-domain / application / infrastructure / interface layering and the RLS
-tenant-context pattern. See `ARCHITECTURE.md` in the scaffold skill for the full
-tour.
+domain / application / infrastructure / interface layering and the RLS <!-- si:when multi-tenant -->
+tenant-context pattern. See `docs/ARCHITECTURE.md` for the full tour. <!-- si:when multi-tenant -->
+domain / application / infrastructure / interface layering. See <!-- si:when single-tenant -->
+`docs/ARCHITECTURE.md` for the full tour. <!-- si:when single-tenant -->

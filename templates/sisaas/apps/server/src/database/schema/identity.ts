@@ -6,10 +6,12 @@ import { tenants } from './tenants'; // si:when multi-tenant
 // The IDENTITY SERVICE ONLY. Every other service verifies tokens and never holds
 // a user record — one source of truth for who someone is.
 //
-// Not RLS-scoped: login must resolve a user's memberships across tenants before
-// any tenant context exists. Guarded in code by the auth layer instead.
+// Not RLS-scoped: login must resolve a user's memberships across tenants before // si:when multi-tenant
+// any tenant context exists. Guarded in code by the auth layer instead. // si:when multi-tenant
+// Not RLS-scoped, because nothing here is. The auth layer is the guard. // si:when single-tenant
 
-export const membershipRole = pgEnum('membership_role', [
+export const membershipRole = pgEnum('membership_role', [ // si:when multi-tenant
+export const userRole = pgEnum('user_role', [ // si:when single-tenant
   'owner',
   'admin',
   'member',
@@ -22,6 +24,13 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash'),
   name: text('name'),
   isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
+  // si:when-begin single-tenant
+  // With no memberships table, what a user may do lives on the user. `owner` is
+  // the first account to register; every later one starts as `member`.
+  role: userRole('role').notNull().default('member'),
+  /** Granular overrides on top of the role. `owner` bypasses all checks. */
+  permissions: jsonb('permissions').$type<Record<string, boolean>>().notNull().default({}),
+  // si:when-end
   status: userStatus('status').notNull().default('active'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -65,4 +74,5 @@ export const refreshTokens = pgTable('refresh_tokens', {
 });
 
 // ── Audit log (cross-cutting) ─────────────────────────────────────────────────
-// Written by AuditService. tenant_id is nullable (platform-level actions have none).
+// Written by AuditService. tenant_id is nullable (platform-level actions have none). // si:when multi-tenant
+// Written by AuditService. // si:when single-tenant

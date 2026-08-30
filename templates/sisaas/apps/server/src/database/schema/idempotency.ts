@@ -14,10 +14,11 @@ export const idempotencyStatus = pgEnum('idempotency_status', ['in_progress', 'c
  * `request_hash` is what stops the dangerous case: reusing a key with a
  * different body. That is a client bug, and replaying the old response for it
  * would hide a real mistake. It is rejected instead.
- *
- * Scoped by tenant so a key from one tenant can never collide with — or reveal
- * anything to — another.
  */
+// si:when-begin multi-tenant
+// Scoped by tenant so a key from one tenant can never collide with — or reveal
+// anything to — another.
+// si:when-end
 export const idempotencyKeys = pgTable(
   'idempotency_keys',
   {
@@ -39,7 +40,8 @@ export const idempotencyKeys = pgTable(
   (t) => [
     // The uniqueness that makes the whole thing work: the first request wins the
     // insert, every retry loses it and reads the winner's result.
-    uniqueIndex('idempotency_tenant_key').on(t.tenantId, t.key, t.method, t.path),
+    uniqueIndex('idempotency_tenant_key').on(t.tenantId, t.key, t.method, t.path), // si:when multi-tenant
+    uniqueIndex('idempotency_key').on(t.key, t.method, t.path), // si:when single-tenant
     index('idempotency_expires_idx').on(t.expiresAt),
   ],
 );

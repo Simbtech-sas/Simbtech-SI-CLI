@@ -48,7 +48,7 @@ export class OutboxService {
       aggregateid: input.aggregateId,
       type: contract.type,
       payload,
-      tenantId: input.tenantId ?? null,
+      tenantId: input.tenantId ?? null, // si:when multi-tenant
     });
   }
 

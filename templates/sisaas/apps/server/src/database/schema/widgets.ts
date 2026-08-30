@@ -9,8 +9,11 @@ import {
 import { sql } from 'drizzle-orm';
 import { tenants } from './tenants'; // si:when multi-tenant
 
+// si:when-begin multi-tenant
 // Example tenant-scoped feature table. Every row carries `tenant_id`; RLS (see
 // drizzle/0000_init.sql) confines all access to the current tenant context.
+// si:when-end
+// Example feature table. // si:when single-tenant
 // Copy this file + the widgets module as the template for a new feature.
 export const widgets = pgTable(
   'widgets',

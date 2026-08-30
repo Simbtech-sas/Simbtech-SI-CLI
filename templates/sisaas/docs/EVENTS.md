@@ -14,6 +14,7 @@ something that never happened. Neither is fixable with retries. The outbox makes
 
 ## Producing
 
+<!-- si:when-begin multi-tenant -->
 ```ts
 // application/widgets.service.ts
 return this.db.runInTenantContext(tenantId, async (tx) => {
@@ -26,6 +27,20 @@ return this.db.runInTenantContext(tenantId, async (tx) => {
   return widget;
 });
 ```
+<!-- si:when-end -->
+<!-- si:when-begin single-tenant -->
+```ts
+// application/widgets.service.ts
+return this.db.transaction(async (tx) => {
+  const widget = await this.repo.create(tx, input);
+  await this.outbox.publish(tx, WidgetCreated, {
+    aggregateId: widget.id,
+    payload: { id: widget.id, name: widget.name, quantity: widget.quantity },
+  });
+  return widget;
+});
+```
+<!-- si:when-end -->
 
 `publish` validates against the contract in `@simbkit/events` before the row is
 written, so a malformed payload fails here rather than in a consumer.
@@ -37,11 +52,20 @@ when the broker returns.
 
 Register in a module's `onModuleInit`:
 
+<!-- si:when-begin multi-tenant -->
 ```ts
 this.registry.on(TenantProvisioned, 'seed-starter-widget', async (event, tx) => {
   await this.repo.create(tx, event.payload.tenantId, { ... });
 });
 ```
+<!-- si:when-end -->
+<!-- si:when-begin single-tenant -->
+```ts
+this.registry.on(UserRegistered, 'seed-starter-widget', async (event, tx) => {
+  await this.repo.create(tx, { ... });
+});
+```
+<!-- si:when-end -->
 
 The handler runs **inside** the transaction that claims the event, so its writes
 and the `processed_events` row commit together.

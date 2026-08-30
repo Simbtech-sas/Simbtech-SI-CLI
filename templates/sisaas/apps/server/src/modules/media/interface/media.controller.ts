@@ -16,6 +16,7 @@ export class MediaController {
     @CurrentPrincipal() p: AccessTokenPayload,
     @Body() dto: CreateUploadDto,
   ) {
-    return this.media.createUpload(p.tenantId, dto);
+    return this.media.createUpload(p.tenantId, dto); // si:when multi-tenant
+    return this.media.createUpload(p.sub, dto); // si:when single-tenant
   }
 }

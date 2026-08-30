@@ -4,8 +4,10 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 
 /**
- * The integration test that matters: does tenant isolation hold through the
- * whole stack — guard, service, RLS — rather than only in SQL.
+ * The integration test that matters: does tenant isolation hold through the // si:when multi-tenant
+ * whole stack — guard, service, RLS — rather than only in SQL. // si:when multi-tenant
+ * The integration test that matters: does the guard actually stand between an // si:when single-tenant
+ * anonymous caller and these routes? Nothing behind it will. // si:when single-tenant
  *
  * Needs the docker stack and a migrated database:
  *   pnpm infra:up && pnpm db:migrate && pnpm test:e2e
@@ -45,8 +47,15 @@ describe('widgets (e2e)', () => {
     await request(app.getHttpServer()).get('/health').expect(200);
   });
 
+  // si:when-begin multi-tenant
   // Add the authenticated cases once you have a seeded tenant:
   //   register two tenants, list widgets as each, assert neither sees the other's.
   // That is the assertion RLS exists for, and scripts/verify-rls.sh proves the
   // same property at the database level.
+  // si:when-end
+  // si:when-begin single-tenant
+  // Add the authenticated cases next, and make the FIRST one the unauthenticated
+  // case: GET /widgets with no token must be 401. In this build the guard is the
+  // only thing enforcing that, so it is the assertion worth having.
+  // si:when-end
 });

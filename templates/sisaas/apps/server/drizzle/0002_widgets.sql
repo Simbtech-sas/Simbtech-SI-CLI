@@ -1,5 +1,6 @@
--- Example tenant-scoped feature table. Copy this shape for your own: a
--- tenant_id with a real foreign key, ENABLE + FORCE RLS, and the policy.
+-- Example tenant-scoped feature table. Copy this shape for your own: a -- si:when multi-tenant
+-- tenant_id with a real foreign key, ENABLE + FORCE RLS, and the policy. -- si:when multi-tenant
+-- Example feature table. Copy this shape for your own. -- si:when single-tenant
 
 CREATE TABLE "widgets" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,

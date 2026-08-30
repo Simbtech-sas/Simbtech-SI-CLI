@@ -115,7 +115,8 @@ export class LocalEventDispatcher implements OnApplicationBootstrap, OnModuleDes
         id: row.id,
         type: row.type,
         aggregateId: row.aggregateid,
-        tenantId: row.tenantId,
+        tenantId: row.tenantId, // si:when multi-tenant
+        tenantId: null, // si:when single-tenant
         occurredAt: row.createdAt,
         payload: parsed.data,
       };
@@ -142,12 +143,14 @@ export class LocalEventDispatcher implements OnApplicationBootstrap, OnModuleDes
   ): Promise<void> {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
+        // si:when-begin multi-tenant
         if (envelope.tenantId) {
-          await this.database.runInTenantContext(envelope.tenantId, work); // si:when multi-tenant
-          await this.database.transaction(work); // si:when single-tenant
+          await this.database.runInTenantContext(envelope.tenantId, work);
         } else {
           await this.database.db.transaction(work);
         }
+        // si:when-end
+        await this.database.db.transaction(work); // si:when single-tenant
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

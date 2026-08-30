@@ -6,8 +6,8 @@ import { AppConfigService } from '../config/app-config.service';
 import { createDatabase, type DrizzleDb, type PgClient } from './drizzle';
 import * as schema from './schema';
 
-/** Transaction-local GUC that RLS policies read to scope every query. */
-export const TENANT_ID_GUC = 'app.tenant_id';
+/** Transaction-local GUC that RLS policies read to scope every query. */ // si:when multi-tenant
+export const TENANT_ID_GUC = 'app.tenant_id'; // si:when multi-tenant
 
 export type TenantTx = PgTransaction<
   PostgresJsQueryResultHKT,
@@ -17,9 +17,11 @@ export type TenantTx = PgTransaction<
 
 @Injectable()
 export class DatabaseService implements OnModuleDestroy {
-  /** Raw client — use for non-tenant-scoped tables (users, auth) and health checks. */
+  /** Raw client — use for non-tenant-scoped tables (users, auth) and health checks. */ // si:when multi-tenant
+  /** The connection everything uses. */ // si:when single-tenant
   readonly db: DrizzleDb;
-  /** BYPASSRLS connection for the super-admin realm (cross-tenant). May be unset. */
+  /** BYPASSRLS connection for the super-admin realm (cross-tenant). May be unset. */ // si:when multi-tenant
+  /** Unused here — there is no RLS to bypass. Kept for `si new -f sisaas`. */ // si:when single-tenant
   readonly adminDb?: DrizzleDb;
   private readonly client: PgClient;
   private readonly adminClient?: PgClient;
@@ -37,7 +39,8 @@ export class DatabaseService implements OnModuleDestroy {
     }
   }
 
-  /** The BYPASSRLS admin connection. Throws if ADMIN_DATABASE_URL is not set. */
+  /** The BYPASSRLS admin connection. Throws if ADMIN_DATABASE_URL is not set. */ // si:when multi-tenant
+  /** The admin connection, if one was configured. Throws if not. */ // si:when single-tenant
   requireAdminDb(): DrizzleDb {
     if (!this.adminDb) {
       throw new Error('ADMIN_DATABASE_URL is not configured');

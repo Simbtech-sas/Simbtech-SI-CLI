@@ -57,7 +57,8 @@ export class IdempotencyInterceptor implements NestInterceptor {
 
     const identity: RequestIdentity = {
       // Scoped to the caller's tenant, from the verified token — never a header.
-      tenantId: req.principal?.tenantId ?? null,
+      tenantId: req.principal?.tenantId ?? null, // si:when multi-tenant
+      tenantId: null, // si:when single-tenant
       key,
       method: req.method,
       path: req.routeOptions?.url ?? req.url,

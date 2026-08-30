@@ -76,7 +76,11 @@ export class AuditService {
    * anything you would want evidence of even if it failed: money movement,
    * permission changes, deletion, data export.
    */
-  async writeAhead(tenantId: string | null, event: AuditEvent): Promise<AuditIntent> {
+  async writeAhead(
+    tenantId: string | null, // si:when multi-tenant
+    event: AuditEvent,
+  ): Promise<AuditIntent> {
+    const tenantId: string | null = null; // si:when single-tenant
     const correlationId = randomUUID();
     await this.appendOnOwnConnection(tenantId, event, 'intent', correlationId);
     return { correlationId, tenantId, event };
@@ -96,8 +100,13 @@ export class AuditService {
    * Run an operation with the attempt recorded before it and the outcome after,
    * whichever way it goes.
    */
-  async around<T>(tenantId: string | null, event: AuditEvent, work: () => Promise<T>): Promise<T> {
-    const intent = await this.writeAhead(tenantId, event);
+  async around<T>(
+    tenantId: string | null, // si:when multi-tenant
+    event: AuditEvent,
+    work: () => Promise<T>,
+  ): Promise<T> {
+    const intent = await this.writeAhead(tenantId, event); // si:when multi-tenant
+    const intent = await this.writeAhead(event); // si:when single-tenant
     try {
       const result = await work();
       await this.settle(intent, 'committed');
@@ -112,6 +121,7 @@ export class AuditService {
 
   // ── plain append ────────────────────────────────────────────────────────────
 
+  // si:when-begin multi-tenant
   /** A completed fact, with no separate intent. Joins the same chain. */
   async recordTenantEvent(tenantId: string, event: AuditEvent): Promise<void> {
     await this.appendOnOwnConnection(tenantId, event, 'event', null);
@@ -120,6 +130,14 @@ export class AuditService {
   async recordPlatformEvent(event: AuditEvent): Promise<void> {
     await this.appendOnOwnConnection(null, event, 'event', null);
   }
+  // si:when-end
+
+  // si:when-begin single-tenant
+  /** A completed fact, with no separate intent. Joins the one chain. */
+  async record(event: AuditEvent): Promise<void> {
+    await this.appendOnOwnConnection(null, event, 'event', null);
+  }
+  // si:when-end
 
   /**
    * Append inside a transaction the caller already owns.
@@ -128,15 +146,20 @@ export class AuditService {
    * derived record of something that did not happen. Anything you want evidence
    * of regardless belongs in `writeAhead`.
    */
-  async appendInTransaction(tx: Tx, tenantId: string | null, event: AuditEvent): Promise<void> {
+  async appendInTransaction(
+    tx: Tx,
+    tenantId: string | null, // si:when multi-tenant
+    event: AuditEvent,
+  ): Promise<void> {
+    const tenantId: string | null = null; // si:when single-tenant
     await this.append(tx, tenantId, event, 'event', null);
   }
 
   // ── verification ────────────────────────────────────────────────────────────
 
+  // si:when-begin multi-tenant
   async verifyTenantChain(tenantId: string): Promise<ChainVerification> {
-    return this.database.runInTenantContext(tenantId, async (tx) => { // si:when multi-tenant
-    return this.database.transaction(async (tx) => { // si:when single-tenant
+    return this.database.runInTenantContext(tenantId, async (tx) => {
       const rows = await tx
         .select()
         .from(auditLog)
@@ -155,18 +178,34 @@ export class AuditService {
       .orderBy(asc(auditLog.seq));
     return verifyRows(rows);
   }
+  // si:when-end
+
+  // si:when-begin single-tenant
+  /** There is one chain. Read it in `seq` order or the hashes mean nothing. */
+  async verifyChain(): Promise<ChainVerification> {
+    const rows = await this.database.db
+      .select()
+      .from(auditLog)
+      .orderBy(asc(auditLog.seq));
+    return verifyRows(rows);
+  }
+  // si:when-end
 
   /**
    * The head hash. Publish or store this outside the database periodically: it is
    * what turns "the chain is internally consistent" into "the chain has not been
    * rewritten".
    */
-  async headHash(tenantId: string | null): Promise<string | null> {
-    const db = tenantId ? this.database.db : this.database.requireAdminDb();
+  async headHash(
+    tenantId: string | null, // si:when multi-tenant
+  ): Promise<string | null> {
+    const tenantId: string | null = null; // si:when single-tenant
+    const db = tenantId ? this.database.db : this.database.requireAdminDb(); // si:when multi-tenant
+    const db = this.database.db; // si:when single-tenant
     const [row] = await db
       .select({ hash: auditLog.hash })
       .from(auditLog)
-      .where(tenantId ? eq(auditLog.tenantId, tenantId) : isNull(auditLog.tenantId))
+      .where(tenantId ? eq(auditLog.tenantId, tenantId) : isNull(auditLog.tenantId)) // si:when multi-tenant
       .orderBy(desc(auditLog.seq))
       .limit(1);
     return row?.hash ?? null;
@@ -184,15 +223,16 @@ export class AuditService {
     phase: AuditPhase,
     correlationId: string | null,
   ): Promise<void> {
+    // si:when-begin multi-tenant
     if (tenantId) {
-      await this.database.runInTenantContext(tenantId, (tx) => // si:when multi-tenant
-      await this.database.transaction((tx) => // si:when single-tenant
+      await this.database.runInTenantContext(tenantId, (tx) =>
         this.append(tx, tenantId, event, phase, correlationId),
       );
       return;
     }
+    // si:when-end
     await this.database
-      .requireAdminDb()
+      .requireAdminDb() // si:when multi-tenant
       .transaction((tx) => this.append(tx as Tx, null, event, phase, correlationId));
   }
 
@@ -211,7 +251,7 @@ export class AuditService {
     const [last] = await tx
       .select({ hash: auditLog.hash })
       .from(auditLog)
-      .where(tenantId ? eq(auditLog.tenantId, tenantId) : isNull(auditLog.tenantId))
+      .where(tenantId ? eq(auditLog.tenantId, tenantId) : isNull(auditLog.tenantId)) // si:when multi-tenant
       .orderBy(desc(auditLog.seq))
       .limit(1);
 
@@ -229,7 +269,7 @@ export class AuditService {
     };
 
     await tx.insert(auditLog).values({
-      tenantId,
+      tenantId, // si:when multi-tenant
       actorUserId: event.actorUserId ?? null,
       action: core.action,
       targetType: core.targetType,
@@ -257,7 +297,8 @@ export function verifyRows(rows: AuditRow[]): ChainVerification {
 
     const expected = computeAuditHash({
       prevHash,
-      tenantId: row.tenantId,
+      tenantId: row.tenantId, // si:when multi-tenant
+      tenantId: null, // si:when single-tenant
       action: row.action,
       targetType: row.targetType,
       targetId: row.targetId,

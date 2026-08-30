@@ -15,7 +15,7 @@ ROOT="$PWD"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-FLAVORS=(sisaas simice sibile-rn sibile-flutter sibile-capacitor sical platform)
+FLAVORS=(sisaas siapp simice sibile-rn sibile-flutter sibile-capacitor sical platform)
 fail=0
 
 for flavor in "${FLAVORS[@]}"; do

@@ -47,10 +47,11 @@ export class TokenService {
   /** Start a fresh refresh-token family (login / register / tenant switch). */
   async startSession(
     userId: string,
-    tenantId: string,
+    tenantId: string, // si:when multi-tenant
     meta: AuthSessionMeta,
   ): Promise<IssuedRefresh> {
-    return this.mint(userId, tenantId, randomBytes(16).toString('hex'), meta);
+    return this.mint(userId, tenantId, randomBytes(16).toString('hex'), meta); // si:when multi-tenant
+    return this.mint(userId, randomBytes(16).toString('hex'), meta); // si:when single-tenant
   }
 
   /**
@@ -61,7 +62,8 @@ export class TokenService {
   async rotate(
     presented: string,
     meta: AuthSessionMeta,
-  ): Promise<{ refresh: IssuedRefresh; userId: string; tenantId: string }> {
+  ): Promise<{ refresh: IssuedRefresh; userId: string; tenantId: string }> { // si:when multi-tenant
+  ): Promise<{ refresh: IssuedRefresh; userId: string }> { // si:when single-tenant
     const row = await this.repo.findRefreshTokenByHash(sha256(presented));
     if (!row || row.expiresAt < new Date()) {
       throw new Error('invalid_refresh');
@@ -72,6 +74,7 @@ export class TokenService {
     }
     const next = randomBytes(16).toString('hex');
     await this.repo.rotateRefreshToken(row.id, sha256(next));
+    // si:when-begin multi-tenant
     if (!row.tenantId) throw new Error('invalid_refresh');
     const refresh = await this.mint(
       row.userId,
@@ -81,6 +84,11 @@ export class TokenService {
       row.familyId,
     );
     return { refresh, userId: row.userId, tenantId: row.tenantId };
+    // si:when-end
+    // si:when-begin single-tenant
+    const refresh = await this.mint(row.userId, next, meta, row.familyId);
+    return { refresh, userId: row.userId };
+    // si:when-end
   }
 
   async revoke(presented: string): Promise<void> {
@@ -89,7 +97,7 @@ export class TokenService {
 
   private async mint(
     userId: string,
-    tenantId: string,
+    tenantId: string, // si:when multi-tenant
     token: string,
     meta: AuthSessionMeta,
     familyId?: string,
@@ -97,7 +105,7 @@ export class TokenService {
     const expiresAt = new Date(Date.now() + REFRESH_TTL_DAYS * 86_400_000);
     await this.repo.insertRefreshToken({
       userId,
-      tenantId,
+      tenantId, // si:when multi-tenant
       familyId: familyId ?? randomBytes(16).toString('hex'),
       tokenHash: sha256(token),
       expiresAt,

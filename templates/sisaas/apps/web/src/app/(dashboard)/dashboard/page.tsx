@@ -31,9 +31,12 @@ export default function DashboardHome() {
             <p className="text-sm text-foreground">
               Signed in as <span className="font-medium">{session.user.email}</span>
             </p>
+            {/* si:when-begin multi-tenant */}
             <p className="text-xs text-muted-foreground">
               Tenant: {session.tenant.name} ({session.tenant.slug})
             </p>
+            {/* si:when-end */}
+            <p className="text-xs text-muted-foreground">Role: {session.role}</p>
           </Card>
         )
       )}

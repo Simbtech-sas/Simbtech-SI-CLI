@@ -22,8 +22,9 @@ si add <id>               # deps, compose, env, module registration — all of i
 ```
 
 There is already a payment port with two providers, a subscription engine with
-dunning, an audit log with a hash chain, a webhook bridge, an outbox, RLS
-tenancy, presigned uploads and a licence system. Re-implementing any of them
+dunning, an audit log with a hash chain, a webhook bridge, an outbox, RLS <!-- si:when multi-tenant -->
+tenancy, presigned uploads and a licence system. Re-implementing any of them <!-- si:when multi-tenant -->
+presigned uploads and a licence system. Re-implementing any of them <!-- si:when single-tenant -->
 produces a second, worse copy that nobody maintains.
 
 If it is not here, look for a **well-maintained open-source project** — check the
@@ -78,6 +79,7 @@ example — read it before adding a module.
 Be paranoid here, deliberately and disproportionately. Everything in this list
 is either a rule this codebase already enforces or a hole it was closed against.
 
+<!-- si:when-begin multi-tenant -->
 **Tenancy**
 - The tenant id comes from the **verified token**. Never from a body, a query
   string, a header, or a webhook payload. A caller that can name its own tenant
@@ -88,6 +90,17 @@ is either a rule this codebase already enforces or a hole it was closed against.
 - Reads and writes go through `runInTenantContext`. It sets the GUC
   transaction-locally, so a pooled connection cannot leak context to whoever
   checks it out next.
+<!-- si:when-end -->
+<!-- si:when-begin single-tenant -->
+**Access control**
+- There is **no row-level security in this build**. The guard on the controller
+  is the whole boundary. A route without `@UseGuards(AccessGuard)` is public, and
+  no policy downstream will catch it.
+- Identity comes from the **verified token**. Never from a body, a query string,
+  a header, or a webhook payload. A caller that can name itself can name anyone.
+- Authorising by a user id in the request is the same mistake as trusting a
+  tenant id in a body. Compare against `@CurrentPrincipal()`, always.
+<!-- si:when-end -->
 
 **Secrets and credentials**
 - Nothing secret in git. Not in a compose file, not in a fixture, not "just for
@@ -131,7 +144,7 @@ pnpm --filter '*/server' exec nest build   # tsc --noEmit does NOT catch emit er
 si start dev                    # the whole stack, migrated, running
 pnpm test:e2e                   # integration, needs the stack up
 pnpm verify:security            # committed secrets, tenant handling
-pnpm verify:rls                 # isolation, proven against a real database
+pnpm verify:rls                 # isolation, proven against a real database <!-- si:when multi-tenant -->
 pnpm verify:audit               # the audit chain
 ```
 
@@ -152,7 +165,8 @@ file you were working in:
 
 ```bash
 pnpm typecheck && pnpm test && pnpm --filter '*/server' exec nest build
-pnpm verify:security && pnpm verify:rls && pnpm verify:audit
+pnpm verify:security && pnpm verify:rls && pnpm verify:audit <!-- si:when multi-tenant -->
+pnpm verify:security && pnpm verify:audit <!-- si:when single-tenant -->
 ```
 
 Then look at what you touched:
@@ -177,7 +191,8 @@ Read your own diff adversarially and answer these out loud:
   exceptional. Every webhook arrives twice; every timed-out request gets sent
   again. Is the second one a no-op, or a second charge?
 - **What happens with nothing?** Empty list, empty string, null, zero, a missing
-  optional field, a user with no tenant. `[0]` on an empty array is `undefined`,
+  optional field, a user with no tenant. `[0]` on an empty array is `undefined`, <!-- si:when multi-tenant -->
+  optional field, the very first user. `[0]` on an empty array is `undefined`, <!-- si:when single-tenant -->
   and it travels a long way before it fails.
 - **What happens at the boundary?** The 31st of the month. The last page. Exactly
   the limit, and one past it. Midnight in another timezone. Zero, and negative.
@@ -187,7 +202,8 @@ Read your own diff adversarially and answer these out loud:
 - **What happens when the dependency is down?** Slow, unreachable, or returning
   something that is not JSON. Does it degrade, or take the process with it? An
   optional tool must never stop the app from booting.
-- **What happens with hostile input?** Not malformed — *crafted*. A tenant id in
+- **What happens with hostile input?** Not malformed — *crafted*. A tenant id in <!-- si:when multi-tenant -->
+- **What happens with hostile input?** Not malformed — *crafted*. A user id in <!-- si:when single-tenant -->
   a body, a signature of the wrong length, a payload of 10MB, a name that is
   markup.
 - **What did I assume that is only true today?** A tag that exists, a field a

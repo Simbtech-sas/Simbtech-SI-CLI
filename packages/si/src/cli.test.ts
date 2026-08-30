@@ -280,3 +280,119 @@ test('every flavor ships agent rules, and they cite commands that exist', async 
     }
   }
 });
+
+test('a variant file used by one choice is deleted by its siblings', async () => {
+  // The trap this exists for: `replace` renames a variant onto its target only
+  // in the option that declares it. Every OTHER option in the same question
+  // leaves the variant sitting in the scaffolded tree — a second copy of a file,
+  // shipped to the user, drifting from the one they actually build.
+  const root = new URL('../../../templates/', import.meta.url);
+  const templates = ['sisaas'];
+
+  for (const name of templates) {
+    const manifest = JSON.parse(
+      await readFile(new URL(`${name}/.si/template.json`, root), 'utf8'),
+    ) as {
+      choices?: { key: string; options: { value: string; replace?: Record<string, string>; remove?: string[] }[] }[];
+    };
+
+    for (const question of manifest.choices ?? []) {
+      for (const option of question.options) {
+        for (const source of Object.values(option.replace ?? {})) {
+          for (const sibling of question.options) {
+            if (sibling.value === option.value) continue;
+            // A sibling that swaps the same variant in does not delete it.
+            if (Object.values(sibling.replace ?? {}).includes(source)) continue;
+            assert.ok(
+              (sibling.remove ?? []).includes(source),
+              `${name}: ${question.key}=${sibling.value} must remove "${source}", ` +
+                `the variant that ${question.key}=${option.value} swaps in`,
+            );
+          }
+        }
+      }
+    }
+  }
+});
+
+test('every package.json parses, raw and composed', async () => {
+  // `// si:when` in a package.json breaks it for npm, for pnpm, and for the
+  // other tests here that read those files directly — so raw must parse, not
+  // only the composed output. tsconfig.json and friends are excluded on
+  // purpose: those are JSONC, and a comment in them is legal.
+  //
+  // If a package.json ever genuinely needs a conditional line, this is the test
+  // that has to be satisfied first.
+  const { pruneProfileLines } = await import('@simbtech/si-core');
+  const { readdir } = await import('node:fs/promises');
+  const root = new URL('../../../templates/', import.meta.url);
+
+  const found: string[] = [];
+  const walk = async (dir: URL, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.git') continue;
+      if (entry.isDirectory()) await walk(new URL(`${entry.name}/`, dir), `${prefix}${entry.name}/`);
+      else if (entry.name === 'package.json') found.push(`${prefix}${entry.name}`);
+    }
+  };
+  await walk(root, '');
+  assert.ok(found.length > 3, 'found almost no package.json — the walk is broken');
+
+  for (const rel of found) {
+    const raw = await readFile(new URL(rel, root), 'utf8');
+    assert.doesNotThrow(() => JSON.parse(raw), `${rel} is not valid JSON in the template`);
+    if (!raw.includes('si:when') && !raw.includes('si:profile')) continue;
+    for (const feature of ['multi-tenant', 'single-tenant', 'mono', 'identity', 'service']) {
+      assert.doesNotThrow(
+        () => JSON.parse(pruneProfileLines(raw, feature)),
+        `${rel} is not valid JSON after composing ${feature}`,
+      );
+    }
+  }
+});
+
+test('composing never leaves an unterminated block comment', async () => {
+  // The bug this catches, which shipped twice before this test existed: a marker
+  // on the CLOSING `*/` of a multi-line comment. The other build drops that one
+  // line, the `/**` above it survives, and the comment swallows the declaration
+  // underneath — a class body vanishes and the errors point somewhere else
+  // entirely. `nest build` catches it; nothing before `nest build` does.
+  const { pruneProfileLines } = await import('@simbtech/si-core');
+  const { readdir } = await import('node:fs/promises');
+  const root = new URL('../../../templates/', import.meta.url);
+
+  const sources: string[] = [];
+  const walk = async (dir: URL, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules' || entry.name === '.git' || entry.name === 'dist') continue;
+      if (entry.isDirectory()) await walk(new URL(`${entry.name}/`, dir), `${prefix}${entry.name}/`);
+      else if (/\.(ts|tsx|js|jsx|css|rs|dart)$/.test(entry.name)) sources.push(`${prefix}${entry.name}`);
+    }
+  };
+  await walk(root, '');
+  assert.ok(sources.length > 50, 'found almost no sources — the walk is broken');
+
+  // Every feature any template can compose with. A marker naming none of these
+  // prunes to nothing everywhere, which this would not notice — that is what the
+  // profile-coverage test is for.
+  const FEATURES = [
+    'multi-tenant', 'single-tenant', 'mono', 'identity', 'service',
+    'auth-builtin', 'auth-oidc', 'storage-s3', 'uploads-presigned',
+  ];
+
+  for (const rel of sources) {
+    const raw = await readFile(new URL(rel, root), 'utf8');
+    if (!raw.includes('si:when') && !raw.includes('si:profile')) continue;
+    for (const feature of FEATURES) {
+      const composed = pruneProfileLines(raw, feature);
+      const opens = (composed.match(/\/\*/g) ?? []).length;
+      const closes = (composed.match(/\*\//g) ?? []).length;
+      assert.equal(
+        opens,
+        closes,
+        `${rel} has ${opens} "/*" and ${closes} "*/" after composing ${feature} — ` +
+          'a marker on a closing delimiter drops it and leaves the comment open',
+      );
+    }
+  }
+});

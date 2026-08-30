@@ -17,11 +17,19 @@ import { IdempotencyInterceptor } from '../../security/interface/idempotency.int
 import { WidgetsService } from '../application/widgets.service';
 import { CreateWidgetDto, UpdateWidgetDto } from './dto';
 
+// si:when-begin multi-tenant
 /**
  * Example tenant-scoped CRUD resource. The tenant id comes from the verified
  * access token (never the client body), and every service call passes it down to
  * runInTenantContext(), so RLS — not this code — is the isolation boundary.
  */
+// si:when-end
+// si:when-begin single-tenant
+/**
+ * Example CRUD resource. `AccessGuard` is what stands between these routes and
+ * an anonymous caller; there is no second, database-level boundary behind it.
+ */
+// si:when-end
 @Controller('widgets')
 @UseGuards(AccessGuard)
 export class WidgetsController {

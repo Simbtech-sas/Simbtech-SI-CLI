@@ -9,10 +9,12 @@ export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(8080),
 
-  // Postgres — three roles (see infra/postgres/initdb/01-init.sql).
-  DATABASE_URL: z.string().min(1), // runtime: RLS-constrained `simbkit_app`
+  // Postgres — three roles (see infra/postgres/initdb/01-init.sql). // si:when multi-tenant
+  // Postgres — two roles (see infra/postgres/initdb/01-init.sql). // si:when single-tenant
+  DATABASE_URL: z.string().min(1), // runtime: RLS-constrained `simbkit_app` // si:when multi-tenant
+  DATABASE_URL: z.string().min(1), // runtime role; owns no table // si:when single-tenant
   MIGRATION_DATABASE_URL: z.string().min(1).optional(), // owner role for migrations
-  ADMIN_DATABASE_URL: z.string().min(1).optional(), // BYPASSRLS super-admin realm
+  ADMIN_DATABASE_URL: z.string().min(1).optional(), // BYPASSRLS super-admin realm // si:when multi-tenant
 
   // Redis — cache + BullMQ. Unset → cache no-ops, single-node sockets.
   REDIS_URL: z.string().min(1).optional(),
@@ -112,7 +114,8 @@ export const envSchema = z.object({
   VAPID_PRIVATE_KEY: z.string().min(1).optional(),
   VAPID_SUBJECT: z.string().min(1).default('mailto:admin@simbkit.local'),
 
-  // Public web base URL + the root domain tenant subdomains live under.
+  // Public web base URL + the root domain tenant subdomains live under. // si:when multi-tenant
+  // Public web base URL, and the domain the app is served from. // si:when single-tenant
   WEB_PUBLIC_URL: z.string().url().default('http://localhost:3100'),
   ROOT_DOMAIN: z.string().min(1).default('simbkit.local'),
 });

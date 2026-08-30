@@ -82,31 +82,39 @@ locally. CI runs it.
   Linux via `extra_hosts: host-gateway`; not tried on macOS or Windows, where
   Docker Desktop provides it natively and should just work.
 
-## SiAPP — the non-multi-tenant flavor
+## SiAPP — done
 
-The composition is built and verified; the TypeScript strip is not.
+Finished and verified end to end. `si new -f siapp` scaffolds, builds with
+`nest build`, migrates against a real Postgres (7 tables, no tenant column, no
+RLS, no memberships) and boots both the API and the worker. Register / login /
+refresh / guarded CRUD were exercised against a live database: the first account
+registers as `owner` under an advisory lock, the second as `member`, the access
+token carries no tenant claim, and a demotion written straight into the database
+takes effect on the next refresh.
 
-**Done:** a flavor can now point at another flavor's template (`siapp` → the
-SiSAAS tree) and fix a choice on the user's behalf. A `tenancy: multi | single`
-choice prunes the tenant column, the index and the RLS block from the widgets
-migration, and removes the tenancy module, `apps/web/src/middleware.ts` and
-`verify-rls.sh`. SiSAAS is unaffected — same files, same RLS, still builds.
+`role` and `permissions` live on the user row. That was the open design
+question; memberships are gone, and a single-tenant app still needs to say who
+may do what.
 
-**Not done:** 26 TypeScript files carry `tenantId`, `runInTenantContext` and
-`TenantTx` — schema files, the database service, IAM, audit, media, realtime,
-idempotency, the event consumer. Marking those up line by line would be fragile
-across function signatures; the honest shape is a single-tenant variant of
-`database.service.ts` plus a pass over the modules.
+Three things worth knowing:
 
-`si new -f siapp` **refuses** with that explanation rather than scaffolding a
-project that cannot compile. `--force` scaffolds it for anyone finishing the
-strip by hand.
+- **The security posture is different, not weaker-by-accident.** With no RLS,
+  the controller guard is the entire boundary, so `verify-security.sh` grew a
+  single-tenant section that fails the build on a controller with no
+  `@UseGuards`. That check was proven against a real regression before it was
+  trusted.
+- **`tenants` is dropped, not kept as a one-row table.** Going multi-tenant later
+  is a migration with a backfill, and the scaffolded `docs/ARCHITECTURE.md` says
+  so plainly rather than implying a switch exists.
+- **`verify:rls` is removed but its `package.json` entry is not.** A marker in a
+  package.json breaks it for npm and for the tests that read it, so the script
+  is deleted and the scaffold's notes tell the user to delete the one line.
 
-Worth deciding before it is finished: whether a single-tenant build keeps
-`tenants` as a table with one row (a smaller diff, and going multi-tenant later
-stays easy) or drops it entirely (a genuinely normal web app, and going
-multi-tenant later is a migration with a backfill). The current pruning assumes
-the second.
+Two gates came out of building it, both proven to fail on the real bug first:
+composition must never leave an unterminated block comment (a marker on a
+closing `*/` deletes it and the comment swallows the class below — `nest build`
+catches it, nothing earlier does), and a variant file swapped in by one choice
+must be deleted by its siblings.
 
 ## Compliance
 

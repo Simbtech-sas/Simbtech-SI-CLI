@@ -42,10 +42,6 @@ connection, applies the migrations and runs the app. `si stop` takes it down.
 | **SiCAL** | Fully local. Web technology, **no network at all**, enforced by a build check | The data must never leave the machine |
 | **Platform** | The infrastructure control plane. k3s over WireGuard, ArgoCD, VPS onboarding | You are running the above in production |
 
-> **SiAPP is not finished.** The composition works — migrations, the tenancy
-> module and the subdomain middleware are pruned — but 26 TypeScript files still
-> reference `tenantId`. `si new -f siapp` refuses and says so. Use SiSAAS today.
-
 ### What SiSAAS gives you on day one
 
 Tenant isolation enforced by Postgres itself (`ENABLE` **and** `FORCE ROW LEVEL
@@ -54,6 +50,24 @@ tokens with rotating refresh tokens and reuse detection, argon2id passwords, a
 transactional outbox so an event and the change it describes commit together, a
 tamper-evident audit log with a SHA-256 hash chain, BullMQ jobs in a separate
 worker process, presigned S3 uploads, and a Next.js app.
+
+### SiAPP — the same thing, for one organisation
+
+SiAPP is SiSAAS with tenancy composed out of the same template, not a second
+tree. Everything above is still there — outbox, audit chain, worker, uploads,
+Next.js — minus the tenant column, the RLS policies, the memberships table and
+the subdomain routing. `role` (`owner` / `admin` / `member`) and its permission
+overrides move onto the user row, and the **first account to register becomes
+the owner**.
+
+Say so out loud, because it is the one thing that changes how you write code:
+**there is no database-level boundary behind your controllers.** In SiSAAS a
+missing `where` clause is caught by a policy. Here the guard on the route is the
+whole of it, so `pnpm verify:security` fails the build on a controller with no
+`@UseGuards`.
+
+Going multi-tenant later is a migration, not a flag — the scaffolded
+`docs/ARCHITECTURE.md` spells out exactly what it costs.
 
 ---
 

@@ -2,8 +2,11 @@
 --
 -- Run as the OWNER role (MIGRATION_DATABASE_URL) — which is `simbkit_owner`, NOT
 -- the superuser. Superusers bypass Row-Level Security unconditionally, so
--- migrating as one would make the FORCE below decorative.
+-- migrating as one would make the FORCE below decorative. -- si:when multi-tenant
+-- Run as the OWNER role (MIGRATION_DATABASE_URL) — `simbkit_owner`. The runtime
+-- role owns nothing it could drop. -- si:when single-tenant
 --
+-- si:when-begin multi-tenant
 -- Every tenant-scoped table gets ENABLE *and* FORCE row level security plus a
 -- `tenant_isolation` policy. Consequence to know: a later data migration that
 -- touches a tenant-scoped table must set the GUC first, e.g.
@@ -15,7 +18,6 @@ CREATE TYPE "tenant_status" AS ENUM('trialing', 'active', 'suspended');--> state
 -- Source of truth in the identity service; a local projection everywhere else,
 -- kept current by consuming tenant events. Either way it is real enough for a
 -- feature table to hold a foreign key to it.
--- si:when-begin multi-tenant
 CREATE TABLE "tenants" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"slug" text NOT NULL UNIQUE,
@@ -93,8 +95,9 @@ $$;--> statement-breakpoint
 
 -- ── Transactional outbox ──────────────────────────────────────────────────────
 -- Column names are Debezium EventRouter defaults; do not rename them. Written in
--- the same transaction as the domain change it announces. Not RLS-scoped:
--- platform events carry no tenant, and only Debezium ever reads this table.
+-- the same transaction as the domain change it announces. Not RLS-scoped: -- si:when multi-tenant
+-- platform events carry no tenant, and only Debezium ever reads this table. -- si:when multi-tenant
+-- the same transaction as the domain change it announces. Only Debezium reads it. -- si:when single-tenant
 CREATE TABLE "outbox_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"aggregatetype" text NOT NULL,

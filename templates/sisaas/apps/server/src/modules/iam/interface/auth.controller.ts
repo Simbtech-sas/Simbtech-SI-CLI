@@ -68,6 +68,7 @@ export class AuthController {
     return this.respond(req, reply, await this.auth.register(dto, this.meta(req)));
   }
 
+  // si:when-begin multi-tenant
   /** Is this email / workspace slug free? Used by the signup form. */
   @Get('available')
   available(@Query('email') email?: string, @Query('slug') slug?: string) {
@@ -76,6 +77,15 @@ export class AuthController {
       slug: slug?.trim().toLowerCase() || undefined,
     });
   }
+  // si:when-end
+
+  // si:when-begin single-tenant
+  /** Is this email free? Used by the signup form. */
+  @Get('available')
+  available(@Query('email') email?: string) {
+    return this.auth.checkAvailability({ email: email?.trim().toLowerCase() || undefined });
+  }
+  // si:when-end
 
   @Post('login')
   @HttpCode(200)
@@ -164,7 +174,7 @@ export class AuthController {
       // by any script on the page, which is precisely what httpOnly prevents.
       ...(isNativeClient(req) ? { refreshToken: result.refreshToken } : {}),
       user: result.user,
-      tenant: result.tenant,
+      tenant: result.tenant, // si:when multi-tenant
       role: result.role,
     };
   }

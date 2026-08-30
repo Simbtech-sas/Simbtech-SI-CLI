@@ -66,6 +66,7 @@ export class OidcAccessGuard implements CanActivate {
       throw new UnauthorizedException('Invalid access token');
     }
 
+    // si:when-begin multi-tenant
     const tenantId = claims[this.tenantClaim];
     if (typeof tenantId !== 'string' || tenantId.length === 0) {
       // Failing closed. A token without a tenant cannot be scoped, and treating
@@ -73,12 +74,13 @@ export class OidcAccessGuard implements CanActivate {
       this.log.warn(`token for ${String(claims.sub)} has no "${this.tenantClaim}" claim`);
       throw new UnauthorizedException('Token carries no tenant');
     }
+    // si:when-end
 
     req.principal = {
       sub: String(claims.sub ?? ''),
       email: typeof claims['email'] === 'string' ? claims['email'] : '',
-      tenantId,
-      membershipId: String(claims['membership_id'] ?? claims.sub ?? ''),
+      tenantId, // si:when multi-tenant
+      membershipId: String(claims['membership_id'] ?? claims.sub ?? ''), // si:when multi-tenant
       role: normaliseRole(claims[this.roleClaim]),
       permissions: normalisePermissions(claims['permissions'] ?? claims['scope']),
     };

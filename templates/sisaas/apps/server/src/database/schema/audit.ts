@@ -26,8 +26,9 @@ export const auditPhase = pgEnum('audit_phase', ['intent', 'committed', 'failed'
  * 3. **Append-only** — a database trigger rejects UPDATE and DELETE, and the app
  *    role is not granted them. Convention is not enforcement.
  *
- * Not RLS-scoped: a platform-level action belongs to no tenant, and the chain
- * must be verifiable across the whole table.
+ * Not RLS-scoped: a platform-level action belongs to no tenant, and the chain // si:when multi-tenant
+ * must be verifiable across the whole table. // si:when multi-tenant
+ * One chain for the whole table, verifiable end to end in `seq` order. // si:when single-tenant
  */
 export const auditLog = pgTable(
   'audit_log',
@@ -50,7 +51,7 @@ export const auditLog = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('audit_log_tenant_idx').on(t.tenantId, t.seq),
+    index('audit_log_tenant_idx').on(t.tenantId, t.seq), // si:when multi-tenant
     index('audit_log_correlation_idx').on(t.correlationId),
   ],
 );

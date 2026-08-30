@@ -1,4 +1,4 @@
-/** Membership roles, highest privilege first. Keep in sync with the DB enum. */
+/** Roles, highest privilege first. Keep in sync with the DB enum. */
 export type Role = 'owner' | 'admin' | 'member';
 
 /**
@@ -17,8 +17,8 @@ export type Role = 'owner' | 'admin' | 'member';
 export interface AccessTokenPayload {
   sub: string; // user id
   email: string;
-  tenantId: string;
-  membershipId: string;
+  tenantId: string; // si:when multi-tenant
+  membershipId: string; // si:when multi-tenant
   role: Role;
   /** Granted permission keys. Absent means none beyond the role. */
   permissions?: string[];

@@ -85,7 +85,8 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}, retry = 
 
 export interface Session {
   user: { id: string; email: string };
-  tenant: { id: string; slug: string; name: string };
+  tenant: { id: string; slug: string; name: string }; // si:when multi-tenant
+  role: 'owner' | 'admin' | 'member';
 }
 interface AuthResponse extends Session {
   accessToken: string;
@@ -98,7 +99,8 @@ export async function login(email: string, password: string): Promise<Session> {
     body: JSON.stringify({ email, password }),
   });
   saveToken(data.accessToken);
-  return { user: data.user, tenant: data.tenant };
+  return { user: data.user, tenant: data.tenant, role: data.role }; // si:when multi-tenant
+  return { user: data.user, role: data.role }; // si:when single-tenant
 }
 
 /** GET /auth/me — the current session, or throws ApiError(401) if signed out. */

@@ -48,7 +48,8 @@ function Shell({ children }: { children: React.ReactNode }) {
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <span className="text-sm font-bold text-primary">Simbkit</span>
         <div className="flex items-center gap-3">
-          <span className="text-xs text-muted-foreground">{session?.tenant.name}</span>
+          <span className="text-xs text-muted-foreground">{session?.tenant.name}</span>{/* si:when multi-tenant */}
+          <span className="text-xs text-muted-foreground">{session?.user.email}</span>{/* si:when single-tenant */}
           <Button variant="ghost" size="sm" onClick={handleLogout}>
             Sign out
           </Button>

@@ -4,10 +4,13 @@
 -- service holding its own copy is two answers to the same question, and they
 -- diverge the first time one of them is written to.
 --
--- Not RLS-scoped: login must resolve a user's memberships ACROSS tenants before
--- any tenant context exists. The auth layer guards them in code instead.
+-- Not RLS-scoped: login must resolve a user's memberships ACROSS tenants before -- si:when multi-tenant
+-- any tenant context exists. The auth layer guards them in code instead. -- si:when multi-tenant
+-- Not RLS-scoped, because nothing here is: there is one organisation. The auth -- si:when single-tenant
+-- layer is what guards these tables. -- si:when single-tenant
 
-CREATE TYPE "membership_role" AS ENUM('owner', 'admin', 'member');--> statement-breakpoint
+CREATE TYPE "membership_role" AS ENUM('owner', 'admin', 'member');--> statement-breakpoint -- si:when multi-tenant
+CREATE TYPE "user_role" AS ENUM('owner', 'admin', 'member');--> statement-breakpoint -- si:when single-tenant
 CREATE TYPE "user_status" AS ENUM('active', 'disabled');--> statement-breakpoint
 
 CREATE TABLE "users" (
@@ -16,6 +19,11 @@ CREATE TABLE "users" (
 	"password_hash" text,
 	"name" text,
 	"is_platform_admin" boolean DEFAULT false NOT NULL,
+	-- si:when-begin single-tenant
+	-- No memberships table, so the role and its overrides live on the user.
+	"role" "user_role" DEFAULT 'member' NOT NULL,
+	"permissions" jsonb DEFAULT '{}'::jsonb NOT NULL,
+	-- si:when-end
 	"status" "user_status" DEFAULT 'active' NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL

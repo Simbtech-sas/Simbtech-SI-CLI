@@ -1,5 +1,6 @@
 import { Injectable, Logger, type OnModuleInit } from '@nestjs/common';
-import { TenantProvisioned } from '@simbkit/events';
+import { TenantProvisioned } from '@simbkit/events'; // si:when multi-tenant
+import { UserRegistered } from '@simbkit/events'; // si:when single-tenant
 import { EventRegistry } from '../../events/application/event-registry.service';
 import { WidgetsRepository } from '../infrastructure/widgets.repository';
 
@@ -23,6 +24,7 @@ export class WidgetsEventHandlers implements OnModuleInit {
   ) {}
 
   onModuleInit(): void {
+    // si:when-begin multi-tenant
     this.registry.on(TenantProvisioned, 'seed-starter-widget', async (event, tx) => {
       // The transaction already carries the tenant GUC (the consumer read it
       // from the message header), so this insert is RLS-scoped like any other.
@@ -33,5 +35,17 @@ export class WidgetsEventHandlers implements OnModuleInit {
       });
       this.log.log(`seeded starter widget for tenant ${event.payload.slug}`);
     });
+    // si:when-end
+
+    // si:when-begin single-tenant
+    this.registry.on(UserRegistered, 'seed-starter-widget', async (event, tx) => {
+      await this.repo.create(tx, {
+        name: 'Getting started',
+        description: `Starter widget for ${event.payload.name ?? event.payload.email}`,
+        quantity: 1,
+      });
+      this.log.log(`seeded starter widget for ${event.payload.email}`);
+    });
+    // si:when-end
   }
 }

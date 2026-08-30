@@ -91,6 +91,7 @@ else
   bad "auth controller has no login throttle — the global limiter allows 300 guesses/min"
 fi
 
+# si:when-begin multi-tenant
 echo "Tenancy"
 if grep -q 'FORCE ROW LEVEL SECURITY' apps/server/drizzle/*.sql; then
   pass "RLS is forced (see verify:rls for the live proof)"
@@ -102,6 +103,28 @@ if code "req.body.*tenantId\|body.tenantId" >/dev/null; then
 else
   pass "tenant id never read from a request body"
 fi
+# si:when-end
+
+# si:when-begin single-tenant
+# There is no RLS here, so the guard on the controller is the entire boundary.
+# That makes an unguarded controller the equivalent of a missing policy, and it
+# is the thing worth failing the build over.
+echo "Access control"
+unguarded=""
+for c in $(find apps/server/src/modules -name '*.controller.ts' 2>/dev/null); do
+  grep -q '@UseGuards' "$c" || grep -q '@Public' "$c" || unguarded="$unguarded $c"
+done
+if [ -n "$unguarded" ]; then
+  bad "controller with no @UseGuards:$unguarded"
+else
+  pass "every controller declares a guard"
+fi
+if code "req.body.*userId\|body.userId" >/dev/null; then
+  bad "a user id is read from a request body — it must come from the verified token"
+else
+  pass "identity never read from a request body"
+fi
+# si:when-end
 
 echo
 if [ "$fail" -eq 0 ]; then echo "  security checks passed"; else echo "  SECURITY CHECKS FAILED"; exit 1; fi

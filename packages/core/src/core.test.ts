@@ -353,3 +353,51 @@ test('markers are honoured in any text file, not a list of known extensions', as
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('JSX comment markers, because JSX has no line comment', async () => {
+  const { pruneProfileLines } = await import('./applyProfile.ts');
+  const page = [
+    '<Card>',
+    '  <p>{session.user.email}</p>',
+    '  <p>{session.tenant.name}</p>{/* si:when multi-tenant */}',
+    '  {/* si:when-begin multi-tenant */}',
+    '  <TenantSwitcher />',
+    '  {/* si:when-end */}',
+    '  <p>Role: {session.role}</p>',
+    '</Card>',
+  ].join('\n');
+
+  const solo = pruneProfileLines(page, 'single-tenant');
+  assert.ok(!solo.includes('tenant.name'));
+  assert.ok(!solo.includes('TenantSwitcher'));
+  assert.ok(solo.includes('session.role'), 'the block must not eat what follows it');
+  assert.ok(!solo.includes('si:when'));
+
+  const multi = pruneProfileLines(page, 'multi-tenant');
+  assert.ok(multi.includes('<p>{session.tenant.name}</p>'), 'the marker goes, the JSX stays');
+  assert.ok(!multi.includes('si:when'), 'no instructions left in shipped output');
+  assert.ok(multi.includes('TenantSwitcher'));
+});
+
+test('HTML comment markers, for Markdown', async () => {
+  const { pruneProfileLines } = await import('./applyProfile.ts');
+  const doc = [
+    '## Roles',
+    '<!-- si:when-begin multi-tenant -->',
+    'Three Postgres roles.',
+    '<!-- si:when-end -->',
+    'Two Postgres roles. <!-- si:when single-tenant -->',
+    '',
+    'Everything after.',
+  ].join('\n');
+
+  const solo = pruneProfileLines(doc, 'single-tenant');
+  assert.ok(!solo.includes('Three Postgres'));
+  assert.ok(solo.includes('Two Postgres roles.'));
+  assert.ok(!solo.includes('si:when'), 'the closer goes with the marker');
+  assert.ok(solo.includes('Everything after.'));
+
+  const multi = pruneProfileLines(doc, 'multi-tenant');
+  assert.ok(multi.includes('Three Postgres roles.'));
+  assert.ok(!multi.includes('Two Postgres'));
+});

@@ -46,6 +46,21 @@ export const WidgetDeleted = defineEvent({
 
 // An event owned by ANOTHER service. This is the normal case: you depend on this
 // package to react to things you did not publish. `service` is theirs, not yours.
+// si:when-begin single-tenant
+export const UserRegistered = defineEvent({
+  service: 'identity',
+  aggregate: 'user',
+  type: 'UserRegistered',
+  version: 1,
+  schema: z.object({
+    userId: z.string().uuid(),
+    email: z.string().email(),
+    name: z.string().nullable(),
+  }),
+});
+// si:when-end
+
+// si:when-begin multi-tenant
 const tenantPayload = z.object({
   tenantId: z.string().uuid(),
   slug: z.string(),
@@ -76,6 +91,7 @@ export const TenantSuspended = defineEvent({
   version: 1,
   schema: z.object({ tenantId: z.string().uuid(), reason: z.string().optional() }),
 });
+// si:when-end
 
 /** Every contract this service knows about, keyed by `type`. */
 export const EVENTS = {
@@ -83,9 +99,12 @@ export const EVENTS = {
   WidgetCreated,
   WidgetUpdated,
   WidgetDeleted,
+  // si:when-begin multi-tenant
   TenantProvisioned,
   TenantUpdated,
   TenantSuspended,
+  // si:when-end
+  UserRegistered, // si:when single-tenant
 } as const satisfies Record<string, EventContract>;
 
 export type EventType = keyof typeof EVENTS;

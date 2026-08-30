@@ -116,7 +116,8 @@
           ],
           "remove": [
             "apps/server/src/modules/widgets/application/widgets.service.solo.ts",
-            "apps/server/src/worker.module.solo.ts"
+            "apps/server/src/worker.module.solo.ts",
+            "docs/ARCHITECTURE.solo.md"
           ]
         },
         {
@@ -130,15 +131,17 @@
             "apps/server/src/modules/tenancy",
             "apps/server/src/database/schema/tenants.ts",
             "apps/web/src/middleware.ts",
-            "scripts/verify-rls.sh"
+            "scripts/verify-rls.sh",
+            "apps/server/src/common/subdomain.util.ts"
           ],
           "notes": [
-            "No RLS means no `pnpm verify:rls` \u2014 the isolation it proves does not exist here, and a gate that passes vacuously is worse than none.",
+            "No RLS means no `pnpm verify:rls` \u2014 the isolation it proves does not exist here, and a gate that passes vacuously is worse than none. The script is gone; the `package.json` entry that called it is left for you to delete.",
             "Going multi-tenant later is a migration, not a flag: every table needs a tenant column, a backfill and a policy."
           ],
           "replace": {
             "apps/server/src/modules/widgets/application/widgets.service.ts": "apps/server/src/modules/widgets/application/widgets.service.solo.ts",
-            "apps/server/src/worker.module.ts": "apps/server/src/worker.module.solo.ts"
+            "apps/server/src/worker.module.ts": "apps/server/src/worker.module.solo.ts",
+            "docs/ARCHITECTURE.md": "docs/ARCHITECTURE.solo.md"
           }
         }
       ]
@@ -220,7 +223,7 @@
             "apps/server/src/modules/auth/interface/access.guard.oidc.ts"
           ],
           "notes": [
-            "Every route is open. The tenant id has no trusted source, so RLS has nothing to scope by until you provide one."
+            "Every route is open. Nothing establishes who the caller is until you provide it, so no guard downstream has anything to trust."
           ]
         }
       ]

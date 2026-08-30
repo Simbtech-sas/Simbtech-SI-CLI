@@ -31,24 +31,34 @@ Credentials default to dev values. To override, copy `infra/.env.example` → `i
 
 ## How the app connects
 
-The server uses three Postgres roles, each with its own connection string:
+The server uses three Postgres roles, each with its own connection string: <!-- si:when multi-tenant -->
+The server uses two Postgres roles, each with its own connection string: <!-- si:when single-tenant -->
 
 ```bash
-# Runtime role — non-superuser, RLS-constrained. Used by the API for all tenant traffic.
+# Runtime role — non-superuser, RLS-constrained. Used by the API for all tenant traffic. <!-- si:when multi-tenant -->
+# Runtime role — non-superuser. Owns no table, so it cannot drop or alter one. <!-- si:when single-tenant -->
 DATABASE_URL=postgresql://simbkit_app:simbkit_app_dev_pwd@localhost:5434/simbkit
 
 # Owner role — runs schema migrations (owns the tables, grants to simbkit_app).
 MIGRATION_DATABASE_URL=postgresql://simbkit:simbkit_dev_pwd@localhost:5434/simbkit
 
+<!-- si:when-begin multi-tenant -->
 # Super-admin role — BYPASSRLS for cross-tenant platform queries. Admin realm only.
 ADMIN_DATABASE_URL=postgresql://simbkit_admin:simbkit_admin_dev_pwd@localhost:5434/simbkit
+<!-- si:when-end -->
 ```
 
 ## Notes
 
+<!-- si:when-begin multi-tenant -->
 - **Postgres roles:** `simbkit` (owner, runs migrations), `simbkit_app` (runtime,
   non-superuser, **RLS-constrained**), and `simbkit_admin` (super-admin, BYPASSRLS,
   non-superuser). See `postgres/initdb/01-init.sql`.
+<!-- si:when-end -->
+<!-- si:when-begin single-tenant -->
+- **Postgres roles:** `simbkit` (owner, runs migrations) and `simbkit_app`
+  (runtime, non-superuser, owns nothing). See `postgres/initdb/01-init.sql`.
+<!-- si:when-end -->
 - **Buckets:** `simbkit` (anonymous download) and `simbkit-private` (private),
   created automatically by the `minio-setup` one-shot container.
 - **Image tags** use moving versions for first-run convenience. Pin exact

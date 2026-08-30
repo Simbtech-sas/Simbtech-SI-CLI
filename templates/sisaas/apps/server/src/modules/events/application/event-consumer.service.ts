@@ -23,7 +23,8 @@ const BASE_BACKOFF_MS = 200;
  *   TABLE_FIELD_EVENT_TYPE=type
  *   TABLE_FIELD_EVENT_TIMESTAMP=created_at
  *   TABLE_FIELD_EVENT_PAYLOAD=payload
- *   TABLE_FIELDS_ADDITIONAL_PLACEMENT=type:header:eventType,tenant_id:header:tenantId
+ *   TABLE_FIELDS_ADDITIONAL_PLACEMENT=type:header:eventType,tenant_id:header:tenantId // si:when multi-tenant
+ *   TABLE_FIELDS_ADDITIONAL_PLACEMENT=type:header:eventType // si:when single-tenant
  */
 const HEADER_ID = 'id';
 const HEADER_TYPE = 'eventType';
@@ -150,12 +151,14 @@ export class EventConsumer implements OnApplicationBootstrap, OnModuleDestroy {
       try {
         // The claim and the handler's writes share one transaction, so a failure
         // rolls back both and the event is genuinely un-processed on retry.
+        // si:when-begin multi-tenant
         if (envelope.tenantId) {
-          await this.database.runInTenantContext(envelope.tenantId, work); // si:when multi-tenant
-          await this.database.transaction(work); // si:when single-tenant
+          await this.database.runInTenantContext(envelope.tenantId, work);
         } else {
           await this.database.db.transaction(work);
         }
+        // si:when-end
+        await this.database.db.transaction(work); // si:when single-tenant
         return;
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

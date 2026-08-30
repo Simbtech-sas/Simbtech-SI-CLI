@@ -10,12 +10,22 @@ pnpm test              # 18 unit tests, including tamper detection
 
 ## Write-ahead: record the attempt, not just the success
 
+<!-- si:when-begin multi-tenant -->
 ```ts
 // The intent is durable BEFORE the work runs, and survives its rollback.
 await audit.around(tenantId, { action: 'invoice.void', targetId: id }, async () => {
   await this.invoices.void(tenantId, id);
 });
 ```
+<!-- si:when-end -->
+<!-- si:when-begin single-tenant -->
+```ts
+// The intent is durable BEFORE the work runs, and survives its rollback.
+await audit.around({ action: 'invoice.void', targetId: id }, async () => {
+  await this.invoices.void(id);
+});
+```
+<!-- si:when-end -->
 
 `around()` writes `intent`, runs the work, then writes `committed` or `failed`.
 
@@ -51,7 +61,8 @@ perfectly. Detecting that needs the head hash stored somewhere they do not
 control:
 
 ```ts
-const head = await audit.headHash(tenantId);   // publish this daily
+const head = await audit.headHash(tenantId);   // publish this daily <!-- si:when multi-tenant -->
+const head = await audit.headHash();           // publish this daily <!-- si:when single-tenant -->
 ```
 
 Send it to a log aggregator, a second database, or a signed receipt. Without an

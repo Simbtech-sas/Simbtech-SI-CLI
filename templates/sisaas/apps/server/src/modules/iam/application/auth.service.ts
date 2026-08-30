@@ -18,7 +18,7 @@ export interface AuthResult {
   refreshToken: string;
   refreshExpiresAt: Date;
   user: { id: string; email: string; name: string | null };
-  tenant: { id: string; slug: string; name: string };
+  tenant: { id: string; slug: string; name: string }; // si:when multi-tenant
   role: Role;
 }
 
@@ -26,8 +26,8 @@ export interface RegisterInput {
   email: string;
   password: string;
   name?: string;
-  tenantName: string;
-  slug: string;
+  tenantName: string; // si:when multi-tenant
+  slug: string; // si:when multi-tenant
 }
 
 @Injectable()
@@ -41,6 +41,7 @@ export class AuthService {
   async register(dto: RegisterInput, meta: AuthSessionMeta): Promise<AuthResult> {
     const passwordHash = await this.passwords.hash(dto.password);
     try {
+      // si:when-begin multi-tenant
       const { user, tenant, membership } = await this.repo.createAccount({
         email: dto.email.toLowerCase(),
         passwordHash,
@@ -49,9 +50,19 @@ export class AuthService {
         slug: dto.slug.toLowerCase(),
       });
       return this.buildSession(user, tenant, membership, meta);
+      // si:when-end
+      // si:when-begin single-tenant
+      const { user } = await this.repo.createAccount({
+        email: dto.email.toLowerCase(),
+        passwordHash,
+        name: dto.name,
+      });
+      return this.buildSession(user, meta);
+      // si:when-end
     } catch (e) {
       if (isUniqueViolation(e)) {
-        throw new ConflictException('Email or workspace address already taken');
+        throw new ConflictException('Email or workspace address already taken'); // si:when multi-tenant
+        throw new ConflictException('Email already taken'); // si:when single-tenant
       }
       throw e;
     }
@@ -68,11 +79,14 @@ export class AuthService {
     const ok = await this.passwords.verify(user.passwordHash, dto.password);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
+    // si:when-begin multi-tenant
     const membership = await this.repo.findFirstMembership(user.id);
     if (!membership) throw new UnauthorizedException('No workspace');
     const tenant = await this.repo.getTenantById(membership.tenantId);
     if (!tenant) throw new UnauthorizedException('No workspace');
     return this.buildSession(user, tenant, membership, meta);
+    // si:when-end
+    return this.buildSession(user, meta); // si:when single-tenant
   }
 
   /** Rotate the refresh token and mint a matching fresh access token. */
@@ -87,6 +101,7 @@ export class AuthService {
       throw new UnauthorizedException('Invalid session');
     }
     const user = await this.repo.findUserById(rotated.userId);
+    // si:when-begin multi-tenant
     const membership = await this.repo.findMembership(
       rotated.userId,
       rotated.tenantId,
@@ -95,6 +110,15 @@ export class AuthService {
     const accessToken = await this.tokens.signAccessToken(
       this.payload(user.id, user.email, membership.tenantId, membership.id, membership.role),
     );
+    // si:when-end
+    // si:when-begin single-tenant
+    // The role is re-read here, not carried in the refresh token: a demotion
+    // must take effect on the next refresh, not on the next login.
+    if (!user || user.status !== 'active') throw new UnauthorizedException('Invalid session');
+    const accessToken = await this.tokens.signAccessToken(
+      this.payload(user.id, user.email, user.role, user.permissions),
+    );
+    // si:when-end
     return {
       accessToken,
       refreshToken: rotated.refresh.token,
@@ -129,8 +153,10 @@ export class AuthService {
     return { ok: true };
   }
 
-  /** Is this email / workspace slug free? For the signup form. */
+  /** Is this email / workspace slug free? For the signup form. */ // si:when multi-tenant
+  /** Is this email free? For the signup form. */ // si:when single-tenant
   async checkAvailability(input: { email?: string; slug?: string }) {
+    // si:when-begin multi-tenant
     const [emailTaken, slugTaken] = await Promise.all([
       input.email
         ? this.repo.findUserByEmail(input.email).then(Boolean)
@@ -143,20 +169,27 @@ export class AuthService {
       emailAvailable: input.email ? !emailTaken : undefined,
       slugAvailable: input.slug ? !slugTaken : undefined,
     };
+    // si:when-end
+    // si:when-begin single-tenant
+    const emailTaken = input.email
+      ? await this.repo.findUserByEmail(input.email).then(Boolean)
+      : false;
+    return { emailAvailable: input.email ? !emailTaken : undefined };
+    // si:when-end
   }
 
   /**
    * Build the access-token claims.
    *
    * Granted permissions are embedded here because every OTHER service verifies
-   * them without a database — this service is the only one that can read a
-   * membership row. Keep the list small: it is in every request header.
+   * them without a database — this service is the only one that can read the
+   * user row. Keep the list small: it is in every request header.
    */
   private payload(
     sub: string,
     email: string,
-    tenantId: string,
-    membershipId: string,
+    tenantId: string, // si:when multi-tenant
+    membershipId: string, // si:when multi-tenant
     role: Role,
     permissions: Record<string, boolean> = {},
   ): AccessTokenPayload {
@@ -164,13 +197,14 @@ export class AuthService {
     return {
       sub,
       email,
-      tenantId,
-      membershipId,
+      tenantId, // si:when multi-tenant
+      membershipId, // si:when multi-tenant
       role,
       ...(granted.length > 0 ? { permissions: granted } : {}),
     };
   }
 
+  // si:when-begin multi-tenant
   private async buildSession(
     user: { id: string; email: string; name: string | null },
     tenant: { id: string; slug: string; name: string },
@@ -197,4 +231,30 @@ export class AuthService {
       role: membership.role,
     };
   }
+  // si:when-end
+
+  // si:when-begin single-tenant
+  private async buildSession(
+    user: {
+      id: string;
+      email: string;
+      name: string | null;
+      role: Role;
+      permissions: Record<string, boolean>;
+    },
+    meta: AuthSessionMeta,
+  ): Promise<AuthResult> {
+    const accessToken = await this.tokens.signAccessToken(
+      this.payload(user.id, user.email, user.role, user.permissions),
+    );
+    const refresh = await this.tokens.startSession(user.id, meta);
+    return {
+      accessToken,
+      refreshToken: refresh.token,
+      refreshExpiresAt: refresh.expiresAt,
+      user: { id: user.id, email: user.email, name: user.name },
+      role: user.role,
+    };
+  }
+  // si:when-end
 }

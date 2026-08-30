@@ -7,7 +7,8 @@ import { PasswordService } from './infrastructure/password.service';
 import { AuthController } from './interface/auth.controller';
 
 /**
- * The identity service: users, tenants, memberships, and the only place access
+ * The identity service: users, tenants, memberships, and the only place access // si:when multi-tenant
+ * The identity service: users, and the only place access // si:when single-tenant
  * tokens are ISSUED. Present in the `identity` profile only.
  *
  * Other services import `AuthModule` instead — they verify tokens without a user

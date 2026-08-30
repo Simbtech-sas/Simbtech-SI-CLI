@@ -20,11 +20,18 @@ export class MediaService {
   ) {}
 
   /** Hand back a presigned URL so the client uploads the original directly to storage. */
-  async createUpload(tenantId: string, input: CreateUploadInput) {
+  async createUpload(
+    tenantId: string, // si:when multi-tenant
+    userId: string, // si:when single-tenant
+    input: CreateUploadInput,
+  ) {
     const ext = UPLOAD_CONTENT_TYPES[input.contentType];
     if (!ext) throw new BadRequestException('Unsupported content type');
     const objectId = randomUUID();
-    const key = `tenants/${tenantId}/uploads/${objectId}/original.${ext}`;
+    const key = `tenants/${tenantId}/uploads/${objectId}/original.${ext}`; // si:when multi-tenant
+    // Keyed by uploader, so one user's presigned URL cannot be walked into
+    // another's prefix. The object id is random; the prefix is the boundary.
+    const key = `users/${userId}/uploads/${objectId}/original.${ext}`; // si:when single-tenant
     const uploadUrl = await this.storage.presignUpload(key, input.contentType);
     return { key, uploadUrl, publicUrl: this.storage.publicUrl(key) };
   }

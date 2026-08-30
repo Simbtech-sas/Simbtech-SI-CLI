@@ -51,7 +51,7 @@ export class IdempotencyService {
     const inserted = await this.db()
       .insert(idempotencyKeys)
       .values({
-        tenantId: request.tenantId,
+        tenantId: request.tenantId, // si:when multi-tenant
         key: request.key,
         method: request.method,
         path: request.path,
@@ -112,6 +112,7 @@ export class IdempotencyService {
     await this.db().delete(idempotencyKeys).where(lt(idempotencyKeys.expiresAt, new Date()));
   }
 
+  // si:when-begin multi-tenant
   /**
    * The admin connection, deliberately.
    *
@@ -119,13 +120,15 @@ export class IdempotencyService {
    * any tenant context is established, and the table is scoped by an explicit
    * `tenant_id` column rather than by RLS.
    */
+  // si:when-end
+  /** The admin connection if one is configured, the ordinary one otherwise. */ // si:when single-tenant
   private db() {
     return this.database.adminDb ?? this.database.db;
   }
 
   private match(r: RequestIdentity) {
     return and(
-      r.tenantId ? eq(idempotencyKeys.tenantId, r.tenantId) : isNull(idempotencyKeys.tenantId),
+      r.tenantId ? eq(idempotencyKeys.tenantId, r.tenantId) : isNull(idempotencyKeys.tenantId), // si:when multi-tenant
       eq(idempotencyKeys.key, r.key),
       eq(idempotencyKeys.method, r.method),
       eq(idempotencyKeys.path, r.path),

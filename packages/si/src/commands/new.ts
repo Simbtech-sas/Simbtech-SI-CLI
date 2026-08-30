@@ -102,28 +102,6 @@ export async function newProject(name: string | undefined, options: NewOptions):
     );
   }
 
-  // ── SiAPP is close, but not done ─────────────────────────────────────────
-  //
-  // Composition, migrations, schema, widgets, events and the database seam are
-  // finished and verified: the single-tenant migrations create 7 tables with no
-  // tenant column, no tenants table and no RLS, and they apply to a real
-  // Postgres. What remains is 26 compile errors, and 14 of them are in IAM —
-  // registration, tokens and memberships all assume a tenant.
-  //
-  // That is auth. Finishing it in a hurry is how a tenant-free build ends up
-  // with a token that still carries a tenant claim nothing validates.
-  if (flavor.id === 'siapp' && !options.force) {
-    throw new Error(
-      'SiAPP is nearly done, but not yet.\n\n' +
-        'Finished and verified: the composition, the migrations (7 tables, no tenant\n' +
-        'column, no RLS, applied to a real Postgres), the schema, widgets, events and\n' +
-        'the database seam.\n\n' +
-        'Remaining: 26 compile errors — audit and idempotency column scoping, and the\n' +
-        'IAM flow, which still registers a tenant and puts a tenant claim in the token.\n\n' +
-        'Use `si new -f sisaas` today. --force scaffolds it as it stands.',
-    );
-  }
-
   // Check the toolchain BEFORE writing anything — a half-scaffolded directory the
   // user cannot build is worse than a clear refusal.
   await assertToolchain(flavor.id);

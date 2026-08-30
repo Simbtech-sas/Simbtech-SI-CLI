@@ -1,30 +1,36 @@
 import { Injectable } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm'; // si:when multi-tenant
+import { eq, sql } from 'drizzle-orm'; // si:when single-tenant
 import { DatabaseService } from '../../../database/database.service';
+// si:when-begin multi-tenant
 import {
   memberships,
   refreshTokens,
   tenants,
   users,
 } from '../../../database/schema';
+// si:when-end
+import { refreshTokens, users } from '../../../database/schema'; // si:when single-tenant
 import type { Role } from '../../auth/domain/jwt-payload';
 
 type UserRow = typeof users.$inferSelect;
+// si:when-begin multi-tenant
 type TenantRow = typeof tenants.$inferSelect;
 type MembershipRow = typeof memberships.$inferSelect;
+// si:when-end
 type RefreshTokenRow = typeof refreshTokens.$inferSelect;
 
 export interface NewAccount {
   email: string;
   passwordHash: string;
   name?: string;
-  tenantName: string;
-  slug: string;
+  tenantName: string; // si:when multi-tenant
+  slug: string; // si:when multi-tenant
 }
 
 export interface NewRefreshToken {
   userId: string;
-  tenantId: string;
+  tenantId: string; // si:when multi-tenant
   familyId: string;
   tokenHash: string;
   expiresAt: Date;
@@ -32,11 +38,14 @@ export interface NewRefreshToken {
   ip?: string | null;
 }
 
+// si:when-begin multi-tenant
 /**
  * Persistence for the identity layer (users, tenants, memberships,
  * refresh_tokens). These tables are NOT RLS-scoped — auth must read across
  * tenants — so everything here uses the raw `db` connection.
  */
+// si:when-end
+/** Persistence for the identity layer: users and their refresh tokens. */ // si:when single-tenant
 @Injectable()
 export class IamRepository {
   constructor(private readonly database: DatabaseService) {}
@@ -53,6 +62,7 @@ export class IamRepository {
     return this.db.query.users.findFirst({ where: eq(users.id, id) });
   }
 
+  // si:when-begin multi-tenant
   getTenantById(id: string): Promise<TenantRow | undefined> {
     return this.db.query.tenants.findFirst({ where: eq(tenants.id, id) });
   }
@@ -112,6 +122,34 @@ export class IamRepository {
       where: and(eq(memberships.id, id), eq(memberships.tenantId, tenantId)),
     });
   }
+  // si:when-end
+
+  // si:when-begin single-tenant
+  /**
+   * Create the user. The first account to register owns the app; every later one
+   * is a plain member until somebody promotes it.
+   *
+   * The advisory lock is what makes "first" mean something: two simultaneous
+   * first registrations would otherwise both read "no users yet" and both come
+   * out owners. Held for the transaction, released on commit.
+   */
+  async createAccount(input: NewAccount): Promise<{ user: UserRow }> {
+    return this.db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext('iam:first-owner'))`);
+      const [existing] = await tx.select({ id: users.id }).from(users).limit(1);
+      const [user] = await tx
+        .insert(users)
+        .values({
+          email: input.email,
+          passwordHash: input.passwordHash,
+          name: input.name,
+          role: existing ? 'member' : 'owner',
+        })
+        .returning();
+      return { user };
+    });
+  }
+  // si:when-end
 
   async updateProfile(
     userId: string,

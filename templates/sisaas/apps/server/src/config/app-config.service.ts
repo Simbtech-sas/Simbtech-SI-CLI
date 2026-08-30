@@ -23,9 +23,17 @@ export class AppConfigService {
     return this.config.get('DATABASE_URL', { infer: true });
   }
 
+  // si:when-begin multi-tenant
   get adminDatabaseUrl(): string | undefined {
     return this.config.get('ADMIN_DATABASE_URL', { infer: true });
   }
+  // si:when-end
+  // si:when-begin single-tenant
+  /** No RLS here, so nothing needs a BYPASSRLS connection. Unset by default. */
+  get adminDatabaseUrl(): string | undefined {
+    return undefined;
+  }
+  // si:when-end
 
   get redisUrl(): string | undefined {
     return this.config.get('REDIS_URL', { infer: true });

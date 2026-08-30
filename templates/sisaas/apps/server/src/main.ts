@@ -86,8 +86,11 @@ async function bootstrap() {
     timeWindow: '1 minute',
   });
 
+  // si:when-begin multi-tenant
   // CORS — reflect the apex and every subdomain under ROOT_DOMAIN in prod (the
   // web app is served from many tenant/role origins that all call this API).
+  // si:when-end
+  // CORS — reflect the apex and every subdomain under ROOT_DOMAIN in prod. // si:when single-tenant
   const rootDomain = process.env.ROOT_DOMAIN ?? 'simbkit.local';
   const corsOrigin = isProd
     ? (

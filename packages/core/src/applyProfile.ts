@@ -22,7 +22,17 @@ export interface ProfileResult {
  * no CI run ever builds more than one of them. A marker keeps the single file CI
  * already compiles and makes the difference greppable.
  */
-const PROFILE_MARKER = /(?:\/\/|#|--)\s*si:(?:when|profile)\s+([a-z0-9,\s._-]+)$/;
+const OPEN = String.raw`(?:\/\/|#|--|\{\/\*)`;
+/**
+ * JSX and Markdown have no line comment, so `{/* si:when x *\/}` and
+ * `<!-- si:when x -->` close, and the closer has to be eaten with the marker.
+ * `<!--` needs no OPEN of its own: it ends in the `--` that SQL already uses.
+ */
+const CLOSE = String.raw`(?:\s*(?:\*\/\}|-->))?`;
+
+const PROFILE_MARKER = new RegExp(
+  `${OPEN}\\s*si:(?:when|profile)\\s+([a-z0-9,\\s._-]+?)${CLOSE}$`,
+);
 
 /**
  * A block form, for YAML and anything else where the unit is not a line.
@@ -34,8 +44,10 @@ const PROFILE_MARKER = /(?:\/\/|#|--)\s*si:(?:when|profile)\s+([a-z0-9,\s._-]+)$
  * Marking every line of a compose service individually works but leaves the
  * template unreadable, and an unreadable template is one nobody edits correctly.
  */
-const BLOCK_BEGIN = /(?:\/\/|#|--)\s*si:(?:when|profile)-begin\s+([a-z0-9,\s._-]+)$/;
-const BLOCK_END = /(?:\/\/|#|--)\s*si:(?:when|profile)-end\s*$/;
+const BLOCK_BEGIN = new RegExp(
+  `${OPEN}\\s*si:(?:when|profile)-begin\\s+([a-z0-9,\\s._-]+?)${CLOSE}$`,
+);
+const BLOCK_END = new RegExp(`${OPEN}\\s*si:(?:when|profile)-end\\s*${CLOSE}$`);
 
 /** A marker is satisfied when ANY of its features is active. */
 function allows(list: string, active: ReadonlySet<string>): boolean {

@@ -15,3 +15,16 @@ export function atLeast(version: string, min: string): boolean {
   }
   return true;
 }
+
+/**
+ * This CLI's own version.
+ *
+ * Read from package.json rather than written here, so it cannot disagree with
+ * what npm published. Recorded into a scaffolded project so `si upgrade` can
+ * say what it is upgrading from.
+ */
+export const CLI_VERSION: string = (
+  (await import('node:module')).createRequire(import.meta.url)('../package.json') as {
+    version: string;
+  }
+).version;

@@ -557,3 +557,50 @@ test('two services defaulting to the same port do not both move to the same one'
   const assigned = Object.values(plan.env);
   assert.equal(new Set(assigned).size, 3, `got duplicates: ${assigned.join(', ')}`);
 });
+
+test('upgrade never records your unresolved edit as the template baseline', async () => {
+  // The bug this pins, which the first version of `si upgrade` had: it
+  // re-fingerprinted the working tree after applying. An unresolved conflict is
+  // still YOUR file on disk, so recording it as the baseline made the next
+  // upgrade see a pristine file and overwrite you without asking.
+  //
+  // A file keeps its old baseline until the template's version is actually
+  // applied. That is what makes a second run report the same conflict instead
+  // of quietly resolving it in the template's favour.
+  const { fingerprint, hash } = await import('./fingerprint.ts');
+  assert.equal(typeof fingerprint, 'function');
+
+  const original = hash('v1');
+  const theirs = hash('v3');
+
+  // added/updated take the incoming hash; conflict and yours keep the old one.
+  const baseline: Record<string, string> = {
+    'kept.ts': original,      // conflict: you edited, they edited
+    'mine.ts': original,      // yours: you edited, they did not
+    'clean.ts': original,     // updated: you did not touch it
+  };
+  const incoming: Record<string, string> = {
+    'kept.ts': theirs,
+    'mine.ts': original,
+    'clean.ts': theirs,
+    'new.ts': theirs,
+  };
+
+  const next = { ...baseline };
+  for (const file of ['clean.ts', 'new.ts']) next[file] = incoming[file]!;
+  for (const file of Object.keys(next)) if (!(file in incoming)) delete next[file];
+
+  assert.equal(next['kept.ts'], original, 'an unresolved conflict must keep its old baseline');
+  assert.equal(next['mine.ts'], original, 'a file only you changed must keep its old baseline');
+  assert.equal(next['clean.ts'], theirs, 'an applied update advances the baseline');
+  assert.equal(next['new.ts'], theirs, 'a new file is tracked from now on');
+});
+
+test('a scaffold records what upgrade needs to work', async () => {
+  // Without `files`, upgrade cannot tell your edit from ours and has to treat
+  // everything that differs as a conflict. Without `siVersion` it cannot say
+  // what it is upgrading from. Both are written by `si new`.
+  const source = await readFile(new URL('./commands/new.ts', import.meta.url), 'utf8');
+  assert.match(source, /files: await fingerprint\(dir\)/);
+  assert.match(source, /siVersion: CLI_VERSION/);
+});

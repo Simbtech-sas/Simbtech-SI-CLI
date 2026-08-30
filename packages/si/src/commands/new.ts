@@ -19,6 +19,8 @@ import {
 } from '@simbtech/si-core';
 import { FLAVORS, findFlavor, flavorChoices, flavorTemplate, registryFlavor, type FlavorId } from '../flavors.ts';
 import { addTools, type PendingDeps } from './add.ts';
+import { fingerprint } from '../fingerprint.ts';
+import { CLI_VERSION } from '../version.ts';
 import { forFlavor, loadRegistry } from '@simbtech/si-tools';
 import { TOOLS, probe, toolsFor } from '../toolchain.ts';
 
@@ -391,6 +393,11 @@ export async function newProject(name: string | undefined, options: NewOptions):
     // `si api` and the platform generator both need to know the layout and the
     // data topology, and asking again per service is how two services end up on
     // different answers to the same question.
+    //
+    // `files` is what makes `si upgrade` possible at all: a hash per file, taken
+    // before anyone has edited anything. Later it is the only way to tell a file
+    // the user changed from a file the template changed — and overwriting the
+    // first to deliver the second is how a scaffold eats someone's afternoon.
     await writeFile(
       path.join(dir, '.si', 'project.json'),
       `${JSON.stringify(
@@ -403,7 +410,9 @@ export async function newProject(name: string | undefined, options: NewOptions):
             Object.entries(selected).filter(([, v]) => v !== undefined),
           ),
           tools,
+          siVersion: CLI_VERSION,
           createdAt: new Date().toISOString(),
+          files: await fingerprint(dir),
         },
         null,
         2,

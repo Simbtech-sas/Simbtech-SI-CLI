@@ -11,6 +11,7 @@ import { addApi, type ApiOptions } from './commands/api.ts';
 import { startDev, stopDev, type StartOptions } from './commands/start.ts';
 import { compliance, type ComplianceOptions } from './commands/compliance.ts';
 import { addTools, type AddOptions } from './commands/add.ts';
+import { upgrade, type UpgradeOptions } from './commands/upgrade.ts';
 import { listTools, type ListOptions } from './commands/list.ts';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
@@ -107,6 +108,21 @@ const commands: CommandDef[] = [
     // record; the CLI itself has nothing to do with it.
     run: (async (tools: string[], options: AddOptions) => {
       await addTools(tools, options);
+    }) as CommandDef['run'],
+  },
+  {
+    name: 'upgrade',
+    description: 'Move this project onto a newer template, without eating your edits',
+    options: [
+      { flags: '--ref <ref>', description: 'template git ref (tag, branch or sha)' },
+      { flags: '--dry-run', description: 'report what would change, change nothing' },
+      {
+        flags: '--force',
+        description: 'take the new version of files you edited, discarding your changes',
+      },
+    ],
+    run: (async (options: UpgradeOptions) => {
+      await upgrade(options);
     }) as CommandDef['run'],
   },
   {

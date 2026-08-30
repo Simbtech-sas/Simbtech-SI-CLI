@@ -98,6 +98,23 @@ export function flavorTemplate(flavor: Flavor): string {
   return flavor.template ?? flavor.id;
 }
 
+/**
+ * The id the tool registry is keyed by, for a flavor id that may be an alias.
+ *
+ * A tool declares the project SHAPES it suits (`flavors: [sisaas, sibile]`), and
+ * two flavors sharing one template are one shape — SiAPP is SiSAAS without
+ * tenancy, so every tool that fits one fits the other. Filtering by the flavor id
+ * instead made `si new -f siapp` offer zero tools, silently: the picker just did
+ * not appear.
+ *
+ * A tool that genuinely suits only one of them still says so, by naming that
+ * flavor explicitly in its own `flavors` list.
+ */
+export function registryFlavor(flavorId: string): string {
+  const flavor = findFlavor(flavorId);
+  return flavor ? flavorTemplate(flavor) : flavorId;
+}
+
 /** Composition features the flavor itself forces, before profiles and choices. */
 export function flavorFeatures(flavor: Flavor): string[] {
   return flavor.features ? [...flavor.features] : [];

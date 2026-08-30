@@ -138,17 +138,38 @@ test('a scaffold that fails validation leaves nothing behind', async () => {
   );
 });
 
-test('si new records the dependencies of the features it wires in', async () => {
-  // Wiring in Temporal writes code importing @temporalio/client. If the install
-  // step is skipped unconditionally, that package is never added to
-  // package.json — and the `pnpm install` the CLI tells the user to run next
-  // cannot install what nothing recorded.
-  const source = await readFile(new URL('./commands/new.ts', import.meta.url), 'utf8');
-  assert.ok(
-    source.includes('skipInstall: options.skipInstall'),
-    'si new must pass the user’s skip-install choice through, not hardcode true',
-  );
-  assert.ok(!/addTools\([^)]*skipInstall: true/s.test(source));
+test('a tool wired with --skip-install reports the deps it could not record', async () => {
+  // `pnpm add` is what writes a package.json entry, so skipping it wires in code
+  // importing packages nothing recorded — and the `pnpm install` the CLI suggests
+  // next cannot install what is not there.
+  //
+  // The version cannot be invented offline and --skip-install means offline, so
+  // the contract is: report the exact command. This asserts the reporting path
+  // exists end to end — installTool populates `pending`, addTools aggregates it,
+  // si new prints it. The previous version of this test grepped new.ts for a
+  // substring and passed the whole time the behaviour was broken.
+  const { installTool } = await import('@simbtech/si-tools');
+  const { findTool } = await import('@simbtech/si-tools');
+
+  const tool = await findTool('livekit');
+  assert.ok(tool, 'livekit must be in the registry for this test to mean anything');
+  assert.ok((tool.deps.server ?? []).length > 0, 'livekit must have server deps');
+
+  const manifest = JSON.parse(
+    await readFile(new URL('../../../templates/sisaas/.si/template.json', import.meta.url), 'utf8'),
+  ) as never;
+
+  const result = await installTool(tool, {
+    root: '/nonexistent-on-purpose', // dryRun writes nothing, so this is never touched
+    manifest,
+    brand: 'x',
+    dryRun: true,
+    skipInstall: true,
+  });
+
+  assert.ok(result.pending, 'skipping the install must report what went unrecorded');
+  assert.deepEqual(result.pending.server, tool.deps.server ?? []);
+  assert.deepEqual(result.pending.web, tool.deps.web ?? []);
 });
 
 test('every @Global module reaches BOTH the API and the worker graph', async () => {
@@ -394,5 +415,89 @@ test('composing never leaves an unterminated block comment', async () => {
           'a marker on a closing delimiter drops it and leaves the comment open',
       );
     }
+  }
+});
+
+test('every flavor offers tools, or is on the list of ones that cannot', async () => {
+  // The bug: `si new -f siapp` offered ZERO open-source tools and the picker
+  // simply did not appear. Tools declare the project shapes they suit, and every
+  // entry named `sisaas`; SiAPP is the same shape under a different flavor id,
+  // so the filter matched nothing and said nothing.
+  //
+  // Silence is the part that made it hard to see, so both halves are pinned
+  // here: the mapping, and the fact that a genuine zero must be deliberate.
+  const { loadRegistry, forFlavor } = await import('@simbtech/si-tools');
+  const { registryFlavor } = await import('./flavors.ts');
+  const registry = await loadRegistry();
+
+  // Flutter uses pub.dev. Every entry in this registry is an npm package or a
+  // container, so there is honestly nothing to offer — and `si new` says so
+  // rather than skipping the question. Delete this the day a Dart tool lands.
+  const KNOWN_EMPTY = new Set(['sibile-flutter']);
+
+  for (const flavor of FLAVORS) {
+    const count = forFlavor(registry, registryFlavor(flavor.id)).filter(
+      (t) => t.kind !== 'feature',
+    ).length;
+    if (KNOWN_EMPTY.has(flavor.id)) {
+      assert.equal(count, 0, `${flavor.id} now has tools — take it out of KNOWN_EMPTY`);
+    } else {
+      assert.ok(count > 0, `${flavor.id} offers no tools, so si new shows no picker`);
+    }
+  }
+
+  // An alias flavor must see exactly what its template sees, or the two drift.
+  const alias = forFlavor(registry, registryFlavor('siapp')).map((t) => t.id).sort();
+  const base = forFlavor(registry, registryFlavor('sisaas')).map((t) => t.id).sort();
+  assert.deepEqual(alias, base, 'SiAPP and SiSAAS are one shape and must offer one list');
+});
+
+test('the tenant-coupled tool list matches what the templates actually do', async () => {
+  // A refusal list that drifts is worse than none: it either blocks a tool that
+  // works, or waves through one that ships a project which cannot compile.
+  //
+  // So the list is checked against the templates rather than trusted. A tool is
+  // tenant-coupled when its files open a tenant context, read a tenant id off the
+  // principal, or declare a tenant_id column. Fix the template and the entry
+  // comes off this list — that is the intended direction of travel.
+  const { readdir } = await import('node:fs/promises');
+  const { TENANT_COUPLED_TOOLS } = await import('./commands/new.ts');
+  const root = new URL('../../tools/templates/', import.meta.url);
+  const declared = new Set(Object.keys(TENANT_COUPLED_TOOLS));
+
+  const coupled = new Set<string>();
+  for (const dir of await readdir(root, { withFileTypes: true })) {
+    if (!dir.isDirectory()) continue;
+    for (const file of await readdir(new URL(`${dir.name}/`, root))) {
+      const text = await readFile(new URL(`${dir.name}/${file}`, root), 'utf8');
+      // A marked-up template is fine: the marker is what removes the tenancy.
+      const bare = text
+        .split('\n')
+        .filter((l) => !/si:when|si:profile/.test(l))
+        .join('\n');
+      if (/runInTenantContext|\b(p|principal|payload)\.tenantId|"tenant_id"/.test(bare)) {
+        coupled.add(dir.name);
+      }
+    }
+  }
+
+  // `cloud-sync` is SiMICE-only, so single-tenant SiAPP never sees it.
+  coupled.delete('cloud-sync');
+
+  for (const id of coupled) {
+    assert.ok(
+      declared.has(id),
+      `${id} still assumes a tenant but is not refused for single-tenant builds — ` +
+        'add it to TENANT_COUPLED_TOOLS in new.ts, or mark the template up',
+    );
+  }
+
+  // And the other way, so the list shrinks as the templates get fixed rather
+  // than blocking a tool that works.
+  for (const id of declared) {
+    assert.ok(
+      coupled.has(id),
+      `${id} no longer assumes a tenant — take it out of TENANT_COUPLED_TOOLS`,
+    );
   }
 });

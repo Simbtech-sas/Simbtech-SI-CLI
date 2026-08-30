@@ -1,6 +1,7 @@
 import pc from 'picocolors';
 import { byCategory, forFlavor, loadRegistry, CATEGORIES } from '@simbtech/si-tools';
 import { findProject } from '../project.ts';
+import { registryFlavor } from '../flavors.ts';
 
 export interface ListOptions {
   category?: string;
@@ -24,7 +25,7 @@ export async function listTools(what: string | undefined, options: ListOptions):
   if (!options.all) {
     const flavor = options.flavor ?? (await findProject().then((p) => p.manifest.id).catch(() => undefined));
     if (flavor) {
-      tools = forFlavor(tools, flavor);
+      tools = forFlavor(tools, registryFlavor(flavor));
       scope = flavor;
     }
   }

@@ -116,6 +116,38 @@ closing `*/` deletes it and the comment swallows the class below — `nest build
 catches it, nothing earlier does), and a variant file swapped in by one choice
 must be deleted by its siblings.
 
+## Payments, subscriptions and Temporal on a single-tenant build
+
+`si new -f siapp --payments kpay` (and `--workflows temporal`, and the
+subscriptions feature) **refuses**, because the templates behind them are still
+written against a tenant and would scaffold a project that does not compile.
+
+What is coupled, and how:
+
+| Tool | Why it does not compose yet |
+|---|---|
+| `payments-kpay`, `payments-joonapay` | `tenant_id NOT NULL REFERENCES tenants`, an RLS policy, a `(tenant_id, external_id)` unique constraint, and a repository that opens `runInTenantContext` |
+| `payments-reconcile` | the workflow id and the activities key on a tenant |
+| `subscriptions` | `one_subscription_per_tenant`, tenant-scoped invoices, a processor and a controller that both read a tenant id |
+| `temporal` | the activities open a tenant context, and the shipped example workflow is *tenant onboarding* |
+
+Roughly 230 tenant-touching lines across 30 template files — the same marker
+treatment the main template has now had, no new technique required. Payments and
+Temporal are mechanical: drop the column, drop the policy, drop the context.
+
+**Subscriptions needs a decision first, and it is a product one:** in a
+single-tenant app, who owns a subscription? Per-user is the usual answer for a
+normal web app that bills its users, and would make it `subscriptions.user_id`
+with `one_subscription_per_user`. But a single-org internal tool might instead
+have exactly one subscription for the whole installation. These are different
+schemas and different dunning behaviour, so the question is worth asking rather
+than guessing.
+
+Two gates hold the line meanwhile: `si new` refuses these combinations before
+writing anything, and a test derives the coupled set from the templates
+themselves and fails if `TENANT_COUPLED_TOOLS` drifts in either direction — so
+fixing a template and forgetting to un-refuse it is caught too.
+
 ## Compliance
 
 `si compliance` reports 109 requirements. Of those, **26 are missing and are

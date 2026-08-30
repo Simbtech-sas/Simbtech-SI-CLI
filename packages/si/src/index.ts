@@ -103,7 +103,11 @@ const commands: CommandDef[] = [
       { flags: '--skip-install', description: 'write files but do not run the package manager' },
       { flags: '--path <dir>', description: 'project root (defaults to the nearest one above cwd)' },
     ],
-    run: ((tools: string[], options: AddOptions) => addTools(tools, options)) as CommandDef['run'],
+    // The return value is for `si new`, which needs to report what it could not
+    // record; the CLI itself has nothing to do with it.
+    run: (async (tools: string[], options: AddOptions) => {
+      await addTools(tools, options);
+    }) as CommandDef['run'],
   },
   {
     name: 'list',

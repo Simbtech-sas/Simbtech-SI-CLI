@@ -20,6 +20,15 @@ export interface InstallResult {
   envKeys: string[];
   composeServices: string[];
   deps: string[];
+  /**
+   * The same dependencies, split by workspace and left UNINSTALLED.
+   *
+   * Only populated when the package-manager call was skipped. `pnpm add` is what
+   * writes a package.json entry, so skipping it wires in code importing packages
+   * nothing recorded — and the `pnpm install` the CLI suggests next cannot
+   * install what is not there. The caller has to say so.
+   */
+  pending?: { server: string[]; web: string[]; dev: string[] };
   /** Things that were already there. Re-running `si add` is a no-op, not an error. */
   skipped: string[];
   notes: string[];
@@ -187,7 +196,11 @@ export async function installTool(tool: Tool, options: InstallOptions): Promise<
   // ── dependencies ──────────────────────────────────────────────────────────
   const server = tool.deps.server ?? [];
   const web = tool.deps.web ?? [];
-  result.deps = [...server, ...web, ...(tool.deps.dev ?? [])];
+  const dev = tool.deps.dev ?? [];
+  result.deps = [...server, ...web, ...dev];
+  if (options.skipInstall && result.deps.length > 0) {
+    result.pending = { server, web, dev };
+  }
   if (!dryRun && !options.skipInstall) {
     if (server.length > 0) {
       await addDependencies(root, server, { filter: `@${options.brand}/server` });
@@ -195,8 +208,8 @@ export async function installTool(tool: Tool, options: InstallOptions): Promise<
     if (web.length > 0) {
       await addDependencies(root, web, { filter: `@${options.brand}/web` });
     }
-    if ((tool.deps.dev ?? []).length > 0) {
-      await addDependencies(root, tool.deps.dev!, { dev: true, filter: `@${options.brand}/server` });
+    if (dev.length > 0) {
+      await addDependencies(root, dev, { dev: true, filter: `@${options.brand}/server` });
     }
   }
 

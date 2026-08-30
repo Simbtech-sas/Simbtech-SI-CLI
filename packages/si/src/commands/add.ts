@@ -52,7 +52,14 @@ async function recordInstalled(root: string, ids: string[]): Promise<void> {
   }
 }
 
-export async function addTools(ids: string[], options: AddOptions): Promise<void> {
+/** Dependencies that were wired in but never recorded, because install was skipped. */
+export interface PendingDeps {
+  server: string[];
+  web: string[];
+  dev: string[];
+}
+
+export async function addTools(ids: string[], options: AddOptions): Promise<PendingDeps> {
   const project = await findProject(options.path);
   const available = forFlavor(await loadRegistry(), project.manifest.id);
 
@@ -85,6 +92,8 @@ export async function addTools(ids: string[], options: AddOptions): Promise<void
 
   if (!options.skipInstall) await ensureInstalled(project.root, options.dryRun ?? false);
 
+  const pending: PendingDeps = { server: [], web: [], dev: [] };
+
   for (const tool of tools) {
     if (!options.quiet) {
       console.log();
@@ -98,6 +107,12 @@ export async function addTools(ids: string[], options: AddOptions): Promise<void
       dryRun: options.dryRun,
       skipInstall: options.skipInstall,
     });
+
+    if (r.pending) {
+      pending.server.push(...r.pending.server);
+      pending.web.push(...r.pending.web);
+      pending.dev.push(...r.pending.dev);
+    }
 
     if (options.quiet) continue;
     for (const f of r.files) console.log(`  ${pc.green('+')} ${f}`);
@@ -118,8 +133,9 @@ export async function addTools(ids: string[], options: AddOptions): Promise<void
   // leave a record claiming otherwise.
   if (!options.dryRun) await recordInstalled(project.root, tools.map((t) => t.id));
 
-  if (options.quiet) return;
+  if (options.quiet) return pending;
   console.log();
   console.log(pc.dim('  next: review the new env values, then `pnpm infra:up`'));
   console.log();
+  return pending;
 }

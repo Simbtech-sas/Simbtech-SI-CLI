@@ -29,12 +29,26 @@ architecture is already here.
 
 ```bash
 pnpm install
-cp apps/server/.env.example apps/server/.env     # edit JWT secrets etc.
-pnpm infra:up                                    # postgres, redis, minio, mailpit
+si start dev      # containers, migrations, API, worker and web — one command
+```
+
+`si start dev` picks free host ports, so a second project (or anything else
+already on 5434) does not collide, and it prints where everything ended up.
+
+By hand, if you would rather:
+
+```bash
+cp apps/server/.env.example apps/server/.env      # edit JWT secrets etc.
+pnpm infra:up                                     # postgres, redis, minio, mailpit
 pnpm --filter @simbkit/server db:migrate          # apply drizzle/0000_init.sql
 pnpm dev                                          # API :8080, web :3100
-pnpm --filter @simbkit/server worker:dev          # background job worker (optional)
+pnpm --filter @simbkit/server worker:dev          # NOT optional: event delivery
 ```
+
+The worker is where event delivery and background jobs run. Without it the
+outbox fills and no handler ever fires — the app looks fine until you check
+whether anything actually happened. `si start dev` starts it for you; `pnpm dev`
+does not.
 
 ## Layout
 

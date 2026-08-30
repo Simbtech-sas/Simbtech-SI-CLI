@@ -7,4 +7,4 @@ services:
       OPENFGA_DATASTORE_ENGINE: memory
       OPENFGA_HTTP_ADDR: '0.0.0.0:8081'
     ports:
-      - '8081:8081'
+      - '${OPENFGA_HOST_PORT:-8081}:8081'

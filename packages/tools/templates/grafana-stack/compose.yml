@@ -3,7 +3,7 @@ services:
     image: prom/prometheus:v3.7.3
     restart: unless-stopped
     ports:
-      - '9090:9090'
+      - '${PROMETHEUS_HOST_PORT:-9090}:9090'
     volumes:
       - prometheus-data:/prometheus
 
@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     command: -config.file=/etc/loki/local-config.yaml
     ports:
-      - '3100:3100'
+      - '${LOKI_HOST_PORT:-3100}:3100'
 
   grafana:
     image: grafana/grafana:12.3.1
@@ -23,7 +23,7 @@ services:
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-admin}
     ports:
-      - '3040:3000'
+      - '${GRAFANA_HOST_PORT:-3040}:3000'
     volumes:
       - grafana-data:/var/lib/grafana
 

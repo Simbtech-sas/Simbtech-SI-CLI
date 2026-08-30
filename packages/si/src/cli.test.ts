@@ -499,3 +499,61 @@ test('every flavor ships a user interface', async () => {
     );
   }
 });
+
+test('host ports are read from the compose file and moved when taken', async () => {
+  const { createServer } = await import('node:net');
+  const { planPorts, readPortRequests } = await import('./ports.ts');
+
+  // Shaped like the real file, including a tool fragment `si add` merged in and
+  // a `ports:`-looking line inside `command:` that must NOT be treated as one.
+  const compose = [
+    'services:',
+    '  postgres:',
+    '    image: postgres:17-alpine',
+    '    ports:',
+    "      - '${POSTGRES_HOST_PORT:-45810}:5432'",
+    '  redpanda:',
+    '    command:',
+    '      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092',
+    '    ports:',
+    "      - '${KAFKA_HOST_PORT:-45820}:19092'",
+    '  meilisearch:',
+    '    ports:',
+    "      - '${MEILISEARCH_HOST_PORT:-45830}:7700'",
+  ].join('\n');
+
+  const requests = readPortRequests(compose);
+  assert.deepEqual(
+    requests.map((r) => r.env),
+    ['POSTGRES_HOST_PORT', 'KAFKA_HOST_PORT', 'MEILISEARCH_HOST_PORT'],
+    'a tool added later must be picked up too — the CLI does not know what it publishes',
+  );
+  assert.equal(requests[0]!.preferred, 45810);
+
+  // Take one for real, so this tests the bind rather than a mock of it.
+  const blocker = createServer();
+  await new Promise<void>((resolve) => blocker.listen(45810, '0.0.0.0', resolve));
+  try {
+    const plan = await planPorts(requests);
+    assert.notEqual(plan.env['POSTGRES_HOST_PORT'], '45810', 'a taken port must move');
+    assert.equal(plan.env['KAFKA_HOST_PORT'], '45820', 'a free port must not move');
+    assert.equal(plan.moved.length, 1);
+    assert.equal(plan.moved[0]!.from, 45810);
+  } finally {
+    await new Promise((resolve) => blocker.close(resolve));
+  }
+});
+
+test('two services defaulting to the same port do not both move to the same one', async () => {
+  // The bug this would be: allocate independently, both find 8080 taken, both
+  // pick 8081, and docker fails on the second with the error the whole feature
+  // exists to avoid.
+  const { planPorts } = await import('./ports.ts');
+  const plan = await planPorts([
+    { env: 'A_HOST_PORT', preferred: 45700, label: 'a' },
+    { env: 'B_HOST_PORT', preferred: 45700, label: 'b' },
+    { env: 'C_HOST_PORT', preferred: 45700, label: 'c' },
+  ]);
+  const assigned = Object.values(plan.env);
+  assert.equal(new Set(assigned).size, 3, `got duplicates: ${assigned.join(', ')}`);
+});

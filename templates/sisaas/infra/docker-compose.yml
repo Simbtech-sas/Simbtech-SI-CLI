@@ -85,8 +85,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-simbkit}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-simbkit_dev_pwd}
     ports:
-      - '9000:9000' # S3 API
-      - '9001:9001' # Web console
+      - '${MINIO_HOST_PORT:-9000}:9000' # S3 API
+      - '${MINIO_CONSOLE_HOST_PORT:-9001}:9001' # Web console
     volumes:
       - minio-data:/data
 
@@ -116,8 +116,8 @@ services:
     image: axllent/mailpit:v1.31.0
     restart: unless-stopped
     ports:
-      - '1025:1025' # SMTP
-      - '8025:8025' # Web UI
+      - '${MAILPIT_SMTP_HOST_PORT:-1025}:1025' # SMTP
+      - '${MAILPIT_HOST_PORT:-8025}:8025' # Web UI
     environment:
       MP_MAX_MESSAGES: '500'
 
@@ -146,8 +146,8 @@ services:
       # route and backend, so it must never be reachable anywhere else.
       - --api.insecure=true
     ports:
-      - '8090:80'
-      - '8091:8080'
+      - '${GATEWAY_HOST_PORT:-8090}:80'
+      - '${GATEWAY_DASHBOARD_HOST_PORT:-8091}:8080'
     extra_hosts:
       # Docker Desktop resolves host.docker.internal; Linux does not, and the
       # failure is a 502 that looks like the app is down.
@@ -177,8 +177,8 @@ services:
       - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
       - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
     ports:
-      - '19092:19092'
-      - '9644:9644' # admin API
+      - '${KAFKA_HOST_PORT:-19092}:19092'
+      - '${KAFKA_ADMIN_HOST_PORT:-9644}:9644' # admin API
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:
@@ -197,7 +197,7 @@ services:
     ports:
       # 8085, not 8080: the API itself defaults to 8080, and `pnpm infra:up`
       # followed by `pnpm dev` would leave it unable to bind its own port.
-      - '8085:8080' # browse topics and messages
+      - '${KAFKA_CONSOLE_HOST_PORT:-8085}:8080' # browse topics and messages
   # ---------------------------------------------------------------------------
   # Debezium Server — tails the Postgres WAL and publishes outbox rows to Kafka.
   # This is what makes the transactional outbox actually deliver; the app never

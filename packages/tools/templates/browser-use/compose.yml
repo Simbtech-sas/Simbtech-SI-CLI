@@ -22,7 +22,7 @@ services:
     ports:
       # Chrome DevTools Protocol. Attach a debugger, or drive the same browser
       # from Playwright while browser-use has it open.
-      - '9222:9222'
+      - '${BROWSER_USE_HOST_PORT:-9222}:9222'
     volumes:
       - browser-use-data:/data
 

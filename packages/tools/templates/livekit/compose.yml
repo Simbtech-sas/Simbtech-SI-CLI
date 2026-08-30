@@ -8,6 +8,6 @@ services:
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:-devkey}: ${LIVEKIT_API_SECRET:-devsecret_at_least_32_characters_long}"
     ports:
-      - '7880:7880'
-      - '7881:7881'
+      - '${LIVEKIT_HOST_PORT:-7880}:7880'
+      - '${LIVEKIT_HOST_PORT_2:-7881}:7881'
       - '50000-50100:50000-50100/udp'

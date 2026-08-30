@@ -27,14 +27,14 @@ services:
       MAIL_FROM_NAME: Bigcapital
       MAIL_FROM_ADDRESS: no-reply@{{brand}}.local
     ports:
-      - '9810:3000'
+      - '${BIGCAPITAL_HOST_PORT:-9810}:3000'
 
   bigcapital-webapp:
     image: bigcapitalhq/webapp:v0.25.34
     restart: unless-stopped
     depends_on: [bigcapital]
     ports:
-      - '9800:80'
+      - '${BIGCAPITAL_WEBAPP_HOST_PORT:-9800}:80'
 
   # Its own MariaDB. Bigcapital creates a DATABASE PER TENANT at runtime, so it
   # needs CREATE DATABASE on its server — a right you do not hand a bought-in

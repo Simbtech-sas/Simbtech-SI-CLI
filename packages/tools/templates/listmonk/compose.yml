@@ -11,7 +11,7 @@ services:
       LISTMONK_db__password: listmonk_dev_pwd
       LISTMONK_db__database: listmonk
     ports:
-      - '9010:9000'
+      - '${LISTMONK_HOST_PORT:-9010}:9000'
 
   listmonk-postgres:
     image: postgres:17-alpine

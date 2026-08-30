@@ -6,7 +6,7 @@ services:
       MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-meili_dev_master_key}
       MEILI_ENV: development
     ports:
-      - '7700:7700'
+      - '${MEILISEARCH_HOST_PORT:-7700}:7700'
     volumes:
       - meili-data:/meili_data
 

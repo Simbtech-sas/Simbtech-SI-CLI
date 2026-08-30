@@ -73,7 +73,7 @@ services:
     ports:
       # 8080 is this project's own API, so the bench moves rather than the app
       # you are building.
-      - '9820:8080'
+      - '${ERPNEXT_FRONTEND_HOST_PORT:-9820}:8080'
 
   erpnext-websocket:
     image: frappe/erpnext:v16.33.0

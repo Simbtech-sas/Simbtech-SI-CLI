@@ -9,7 +9,7 @@ services:
       DATABASE_TYPE: postgresql
       APP_SECRET: ${UMAMI_APP_SECRET:-umami_dev_secret}
     ports:
-      - '3030:3000'
+      - '${UMAMI_HOST_PORT:-3030}:3000'
 
   umami-postgres:
     image: postgres:17-alpine

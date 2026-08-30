@@ -12,7 +12,7 @@ services:
       BLNK_REDIS_DNS: blnk-redis:6379
       BLNK_SERVER_SECRET_KEY: ${BLNK_SECRET_KEY:-blnk_dev_secret}
     ports:
-      - '5001:5001'
+      - '${BLNK_HOST_PORT:-5001}:5001'
 
   blnk-postgres:
     image: postgres:17-alpine

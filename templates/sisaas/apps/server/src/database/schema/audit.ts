@@ -1,6 +1,6 @@
 import { bigserial, index, jsonb, pgEnum, pgTable, text, timestamp, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { tenants } from './tenants';
+import { tenants } from './tenants'; // si:when multi-tenant
 
 /**
  * Write-ahead phases.
@@ -35,7 +35,7 @@ export const auditLog = pgTable(
     /** Chain position. The only correct order to read or verify this table in. */
     seq: bigserial('seq', { mode: 'number' }).primaryKey(),
     id: uuid('id').notNull().unique().default(sql`gen_random_uuid()`),
-    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'set null' }),
+    tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'set null' }), // si:when multi-tenant
     actorUserId: uuid('actor_user_id'),
     action: text('action').notNull(),
     targetType: text('target_type'),

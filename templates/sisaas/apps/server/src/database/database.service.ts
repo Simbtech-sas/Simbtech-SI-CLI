@@ -50,6 +50,7 @@ export class DatabaseService implements OnModuleDestroy {
     if (this.adminClient) await this.adminClient.end({ timeout: 5 });
   }
 
+  // si:when-begin multi-tenant
   /**
    * Sets the tenant context on an existing transaction. Use inside a manual
    * `db.transaction(...)` when earlier statements must run WITHOUT a context
@@ -73,5 +74,21 @@ export class DatabaseService implements OnModuleDestroy {
       await this.setTenantContext(tx, tenantId);
       return fn(tx);
     });
+  }
+  // si:when-end
+
+  /**
+   * A plain transaction, with no tenant context.
+   *
+   * This is the whole seam between the two builds. A multi-tenant app wraps
+   * every query in `runInTenantContext`, because RLS reads a GUC that must be
+   * set inside the same transaction. A single-tenant app has no tenant to scope
+   * to and no policy to satisfy, so the transaction is just a transaction.
+   *
+   * Present in BOTH builds: multi-tenant code needs it too, for the writes that
+   * happen before a tenant exists.
+   */
+  async transaction<T>(fn: (tx: TenantTx) => Promise<T>): Promise<T> {
+    return this.db.transaction(async (tx) => fn(tx));
   }
 }

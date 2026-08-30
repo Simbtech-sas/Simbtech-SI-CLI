@@ -21,6 +21,7 @@ CREATE TABLE "users" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );--> statement-breakpoint
 
+-- si:when-begin multi-tenant
 CREATE TABLE "memberships" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"tenant_id" uuid NOT NULL REFERENCES "tenants"("id") ON DELETE CASCADE,
@@ -33,11 +34,12 @@ CREATE TABLE "memberships" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "memberships_tenant_user" UNIQUE("tenant_id", "user_id")
 );--> statement-breakpoint
+-- si:when-end
 
 CREATE TABLE "refresh_tokens" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" uuid NOT NULL REFERENCES "users"("id") ON DELETE CASCADE,
-	"tenant_id" uuid REFERENCES "tenants"("id") ON DELETE CASCADE,
+	"tenant_id" uuid REFERENCES "tenants"("id") ON DELETE CASCADE, -- si:when multi-tenant
 	"family_id" uuid NOT NULL,
 	"token_hash" text NOT NULL,
 	"expires_at" timestamp with time zone NOT NULL,

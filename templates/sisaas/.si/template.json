@@ -113,6 +113,10 @@
           "description": "Many organisations in one database, isolated by Postgres RLS.",
           "features": [
             "multi-tenant"
+          ],
+          "remove": [
+            "apps/server/src/modules/widgets/application/widgets.service.solo.ts",
+            "apps/server/src/worker.module.solo.ts"
           ]
         },
         {
@@ -131,7 +135,11 @@
           "notes": [
             "No RLS means no `pnpm verify:rls` \u2014 the isolation it proves does not exist here, and a gate that passes vacuously is worse than none.",
             "Going multi-tenant later is a migration, not a flag: every table needs a tenant column, a backfill and a policy."
-          ]
+          ],
+          "replace": {
+            "apps/server/src/modules/widgets/application/widgets.service.ts": "apps/server/src/modules/widgets/application/widgets.service.solo.ts",
+            "apps/server/src/worker.module.ts": "apps/server/src/worker.module.solo.ts"
+          }
         }
       ]
     },

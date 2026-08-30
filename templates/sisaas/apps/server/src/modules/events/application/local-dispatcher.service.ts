@@ -143,7 +143,8 @@ export class LocalEventDispatcher implements OnApplicationBootstrap, OnModuleDes
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         if (envelope.tenantId) {
-          await this.database.runInTenantContext(envelope.tenantId, work);
+          await this.database.runInTenantContext(envelope.tenantId, work); // si:when multi-tenant
+          await this.database.transaction(work); // si:when single-tenant
         } else {
           await this.database.db.transaction(work);
         }

@@ -22,7 +22,7 @@ export const idempotencyKeys = pgTable(
   'idempotency_keys',
   {
     id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
-    tenantId: uuid('tenant_id'),
+    tenantId: uuid('tenant_id'), // si:when multi-tenant
     /** The client-supplied Idempotency-Key header. */
     key: text('key').notNull(),
     method: text('method').notNull(),

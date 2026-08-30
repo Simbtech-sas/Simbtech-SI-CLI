@@ -1,6 +1,6 @@
 import { boolean, jsonb, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { tenants } from './tenants';
+import { tenants } from './tenants'; // si:when multi-tenant
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 // The IDENTITY SERVICE ONLY. Every other service verifies tokens and never holds
@@ -27,6 +27,7 @@ export const users = pgTable('users', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// si:when-begin multi-tenant
 export const memberships = pgTable(
   'memberships',
   {
@@ -45,13 +46,14 @@ export const memberships = pgTable(
   },
   (t) => [unique('memberships_tenant_user').on(t.tenantId, t.userId)],
 );
+// si:when-end
 
 export const refreshTokens = pgTable('refresh_tokens', {
   id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
   userId: uuid('user_id')
     .notNull()
     .references(() => users.id, { onDelete: 'cascade' }),
-  tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }),
+  tenantId: uuid('tenant_id').references(() => tenants.id, { onDelete: 'cascade' }), // si:when multi-tenant
   familyId: uuid('family_id').notNull(),
   tokenHash: text('token_hash').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),

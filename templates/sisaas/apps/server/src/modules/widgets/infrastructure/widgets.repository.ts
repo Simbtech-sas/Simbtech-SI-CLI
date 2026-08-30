@@ -25,10 +25,12 @@ export class WidgetsRepository {
     return row;
   }
 
-  async create(tx: TenantTx, tenantId: string, input: NewWidget): Promise<Widget> {
+  async create(tx: TenantTx, tenantId: string, input: NewWidget): Promise<Widget> { // si:when multi-tenant
+  async create(tx: TenantTx, input: NewWidget): Promise<Widget> { // si:when single-tenant
     const [row] = await tx
       .insert(widgets)
-      .values({ tenantId, ...input })
+      .values({ tenantId, ...input }) // si:when multi-tenant
+      .values({ ...input }) // si:when single-tenant
       .returning();
     return row!;
   }

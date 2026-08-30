@@ -151,7 +151,8 @@ export class EventConsumer implements OnApplicationBootstrap, OnModuleDestroy {
         // The claim and the handler's writes share one transaction, so a failure
         // rolls back both and the event is genuinely un-processed on retry.
         if (envelope.tenantId) {
-          await this.database.runInTenantContext(envelope.tenantId, work);
+          await this.database.runInTenantContext(envelope.tenantId, work); // si:when multi-tenant
+          await this.database.transaction(work); // si:when single-tenant
         } else {
           await this.database.db.transaction(work);
         }

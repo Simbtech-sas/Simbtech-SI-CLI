@@ -25,7 +25,7 @@ export const outboxEvents = pgTable(
     type: text('type').notNull(),
     payload: jsonb('payload').$type<Record<string, unknown>>().notNull(),
     /** Null for platform-level events. Propagated to consumers as a header. */
-    tenantId: uuid('tenant_id'),
+    tenantId: uuid('tenant_id'), // si:when multi-tenant
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     /**
      * Set by the in-process dispatcher in a single deployable. Untouched in a

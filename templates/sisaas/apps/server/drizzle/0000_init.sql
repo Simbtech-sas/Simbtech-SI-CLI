@@ -15,6 +15,7 @@ CREATE TYPE "tenant_status" AS ENUM('trialing', 'active', 'suspended');--> state
 -- Source of truth in the identity service; a local projection everywhere else,
 -- kept current by consuming tenant events. Either way it is real enough for a
 -- feature table to hold a foreign key to it.
+-- si:when-begin multi-tenant
 CREATE TABLE "tenants" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"slug" text NOT NULL UNIQUE,
@@ -25,6 +26,7 @@ CREATE TABLE "tenants" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );--> statement-breakpoint
 CREATE INDEX "tenants_slug_idx" ON "tenants" ("slug");--> statement-breakpoint
+-- si:when-end
 
 -- ── Audit log ─────────────────────────────────────────────────────────────────
 -- Append-only and tamper-evident. Each service records what it did; a
@@ -43,7 +45,7 @@ CREATE TYPE "audit_phase" AS ENUM('intent', 'committed', 'failed', 'event');--> 
 CREATE TABLE "audit_log" (
 	"seq" bigserial PRIMARY KEY NOT NULL,
 	"id" uuid DEFAULT gen_random_uuid() NOT NULL UNIQUE,
-	"tenant_id" uuid REFERENCES "tenants"("id") ON DELETE SET NULL,
+	"tenant_id" uuid REFERENCES "tenants"("id") ON DELETE SET NULL, -- si:when multi-tenant
 	"actor_user_id" uuid,
 	"action" text NOT NULL,
 	"target_type" text,
@@ -55,7 +57,7 @@ CREATE TABLE "audit_log" (
 	"hash" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );--> statement-breakpoint
-CREATE INDEX "audit_log_tenant_idx" ON "audit_log" ("tenant_id", "seq");--> statement-breakpoint
+CREATE INDEX "audit_log_tenant_idx" ON "audit_log" ("tenant_id", "seq");--> statement-breakpoint -- si:when multi-tenant
 CREATE INDEX "audit_log_correlation_idx" ON "audit_log" ("correlation_id");--> statement-breakpoint
 
 -- Append-only, enforced. Without this the table is append-only by convention,
@@ -99,7 +101,7 @@ CREATE TABLE "outbox_events" (
 	"aggregateid" text NOT NULL,
 	"type" text NOT NULL,
 	"payload" jsonb NOT NULL,
-	"tenant_id" uuid,
+	"tenant_id" uuid, -- si:when multi-tenant
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	-- Set by the in-process dispatcher in a single deployable; untouched in a
 	-- microservice deployment, where Debezium tails the WAL instead. Present in
@@ -128,7 +130,7 @@ CREATE TYPE "idempotency_status" AS ENUM('in_progress', 'completed');--> stateme
 
 CREATE TABLE "idempotency_keys" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
-	"tenant_id" uuid,
+	"tenant_id" uuid, -- si:when multi-tenant
 	"key" text NOT NULL,
 	"method" text NOT NULL,
 	"path" text NOT NULL,
@@ -142,7 +144,8 @@ CREATE TABLE "idempotency_keys" (
 	"expires_at" timestamp with time zone NOT NULL
 );--> statement-breakpoint
 -- Scoped by tenant: a key from one tenant can never collide with another's.
-CREATE UNIQUE INDEX "idempotency_tenant_key" ON "idempotency_keys" ("tenant_id", "key", "method", "path");--> statement-breakpoint
+CREATE UNIQUE INDEX "idempotency_tenant_key" ON "idempotency_keys" ("tenant_id", "key", "method", "path");--> statement-breakpoint -- si:when multi-tenant
+CREATE UNIQUE INDEX "idempotency_key" ON "idempotency_keys" ("key", "method", "path");--> statement-breakpoint -- si:when single-tenant
 CREATE INDEX "idempotency_expires_idx" ON "idempotency_keys" ("expires_at");--> statement-breakpoint
 
 -- ── Change data capture ───────────────────────────────────────────────────────

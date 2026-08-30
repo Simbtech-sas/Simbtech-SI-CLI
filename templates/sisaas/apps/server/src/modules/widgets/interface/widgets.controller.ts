@@ -29,12 +29,14 @@ export class WidgetsController {
 
   @Get()
   list(@CurrentPrincipal() p: AccessTokenPayload) {
-    return this.widgets.list(p.tenantId);
+    return this.widgets.list(p.tenantId); // si:when multi-tenant
+    return this.widgets.list(); // si:when single-tenant
   }
 
   @Get(':id')
   get(@CurrentPrincipal() p: AccessTokenPayload, @Param('id') id: string) {
-    return this.widgets.get(p.tenantId, id);
+    return this.widgets.get(p.tenantId, id); // si:when multi-tenant
+    return this.widgets.get(id); // si:when single-tenant
   }
 
   // Creation is the classic double-submit: a client that times out mid-request
@@ -45,7 +47,8 @@ export class WidgetsController {
   @Idempotent({ required: false })
   @UseInterceptors(IdempotencyInterceptor)
   create(@CurrentPrincipal() p: AccessTokenPayload, @Body() dto: CreateWidgetDto) {
-    return this.widgets.create(p.tenantId, dto);
+    return this.widgets.create(p.tenantId, dto); // si:when multi-tenant
+    return this.widgets.create(dto); // si:when single-tenant
   }
 
   @Patch(':id')
@@ -54,11 +57,13 @@ export class WidgetsController {
     @Param('id') id: string,
     @Body() dto: UpdateWidgetDto,
   ) {
-    return this.widgets.update(p.tenantId, id, dto);
+    return this.widgets.update(p.tenantId, id, dto); // si:when multi-tenant
+    return this.widgets.update(id, dto); // si:when single-tenant
   }
 
   @Delete(':id')
   remove(@CurrentPrincipal() p: AccessTokenPayload, @Param('id') id: string) {
-    return this.widgets.remove(p.tenantId, id);
+    return this.widgets.remove(p.tenantId, id); // si:when multi-tenant
+    return this.widgets.remove(id); // si:when single-tenant
   }
 }

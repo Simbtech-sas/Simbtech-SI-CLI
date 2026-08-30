@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { asc, desc, eq, isNull, sql } from 'drizzle-orm';
-import { DatabaseService } from '../../../database/database.service';
+import { DatabaseService, type TenantTx } from '../../../database/database.service';
 import { auditLog } from '../../../database/schema';
 import { type AuditEntryCore, type AuditPhase, computeAuditHash } from '../domain/audit-hash';
 
@@ -28,7 +28,10 @@ export interface AuditIntent {
   event: AuditEvent;
 }
 
-type Tx = Parameters<Parameters<DatabaseService['runInTenantContext']>[1]>[0];
+// The exported transaction type, not one derived from a method signature.
+// `runInTenantContext` does not exist in a single-tenant build, and deriving a
+// type from it made an unrelated file fail to compile there.
+type Tx = TenantTx;
 type AuditRow = typeof auditLog.$inferSelect;
 
 /**
@@ -132,7 +135,8 @@ export class AuditService {
   // ── verification ────────────────────────────────────────────────────────────
 
   async verifyTenantChain(tenantId: string): Promise<ChainVerification> {
-    return this.database.runInTenantContext(tenantId, async (tx) => {
+    return this.database.runInTenantContext(tenantId, async (tx) => { // si:when multi-tenant
+    return this.database.transaction(async (tx) => { // si:when single-tenant
       const rows = await tx
         .select()
         .from(auditLog)
@@ -181,7 +185,8 @@ export class AuditService {
     correlationId: string | null,
   ): Promise<void> {
     if (tenantId) {
-      await this.database.runInTenantContext(tenantId, (tx) =>
+      await this.database.runInTenantContext(tenantId, (tx) => // si:when multi-tenant
+      await this.database.transaction((tx) => // si:when single-tenant
         this.append(tx, tenantId, event, phase, correlationId),
       );
       return;

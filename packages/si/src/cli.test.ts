@@ -604,3 +604,97 @@ test('a scaffold records what upgrade needs to work', async () => {
   assert.match(source, /files: await fingerprint\(dir\)/);
   assert.match(source, /siVersion: CLI_VERSION/);
 });
+
+test('a compose file with literal host ports is made movable, once', async () => {
+  // The failure this fixes, reported from a real project: `si start dev` died
+  // with "Bind for 0.0.0.0:9000 failed: port is already allocated". The port
+  // allocator only understood `${VAR:-9000}`, and a project scaffolded before
+  // that existed has `- '9000:9000'` written out — so nothing was allocated and
+  // docker bound exactly the port that was taken.
+  const { parameteriseCompose, readPortRequests } = await import('./ports.ts');
+
+  const before = [
+    'services:',
+    '  minio:',
+    '    image: minio/minio',
+    '    ports:',
+    "      - '9000:9000' # S3 API",
+    "      - '9001:9001' # Web console",
+    '  redpanda:',
+    '    command:',
+    // Not a port mapping. Rewriting this would corrupt the broker's own config.
+    '      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092',
+    '    ports:',
+    "      - '19092:19092'",
+  ].join('\n');
+
+  const first = parameteriseCompose(before);
+  assert.equal(first.changed.length, 3);
+  assert.match(first.compose, /\$\{MINIO_HOST_PORT:-9000\}:9000/);
+  assert.match(first.compose, /\$\{MINIO_CONSOLE_HOST_PORT:-9001\}:9001/);
+  assert.match(first.compose, /\$\{KAFKA_HOST_PORT:-19092\}:19092/);
+  assert.match(
+    first.compose,
+    /--kafka-addr=internal:\/\/0\.0\.0\.0:9092,external:\/\/0\.0\.0\.0:19092/,
+    'a port inside `command:` is not a mapping and must survive untouched',
+  );
+
+  // The defaults are the ports it had, so nothing about the stack changes.
+  const requests = readPortRequests(first.compose);
+  assert.deepEqual(
+    requests.map((r) => r.preferred),
+    [9000, 9001, 19092],
+  );
+
+  // Run on every start, so it has to be a no-op the second time.
+  const second = parameteriseCompose(first.compose);
+  assert.equal(second.changed.length, 0, 'migrating an already-migrated file must change nothing');
+  assert.equal(second.compose, first.compose);
+});
+
+test('the transport is a choice, not a consequence of the profile', async () => {
+  // It used to be derived: `mono` meant in-process, `identity`/`service` meant
+  // Kafka. That made a perfectly reasonable wish — one deployable, but on a
+  // broker from day one — unexpressible. The markers are features now.
+  const root = new URL('../../../templates/sisaas/', import.meta.url);
+
+  for (const file of [
+    'apps/server/src/app.module.ts',
+    'apps/server/src/worker.module.ts',
+    'apps/server/src/worker.module.solo.ts',
+  ]) {
+    const text = await readFile(new URL(file, root), 'utf8');
+    assert.match(text, /transport: 'in-process' \}\).*si:when events-in-process/);
+    assert.match(text, /transport: 'kafka' \}\).*si:when events-kafka/);
+    assert.doesNotMatch(
+      text,
+      /EventsModule[^\n]*si:profile/,
+      `${file} still ties the transport to the profile`,
+    );
+  }
+
+  // The broker itself has to come and go with the choice, or `--events kafka`
+  // on a mono project configures a Kafka that is not running.
+  const compose = await readFile(new URL('infra/docker-compose.yml', root), 'utf8');
+  assert.match(compose, /si:when-begin events-kafka/);
+  assert.doesNotMatch(compose, /si:profile-begin identity,service/);
+
+  // And both must be offered.
+  const manifest = JSON.parse(await readFile(new URL('.si/template.json', root), 'utf8')) as {
+    choices: Array<{ key: string; options: Array<{ value: string }> }>;
+  };
+  const events = manifest.choices.find((c) => c.key === 'events');
+  assert.ok(events, 'the events question must exist');
+  assert.deepEqual(events.options.map((o) => o.value).sort(), ['in-process', 'kafka']);
+
+  const modules = manifest.choices.find((c) => c.key === 'modules');
+  assert.ok(modules, 'the module-shape question must exist');
+  assert.deepEqual(modules.options.map((o) => o.value).sort(), ['cqrs', 'service']);
+});
+
+test('scaffold takes the module shape from the project, not a flag you must remember', async () => {
+  // A codebase with some modules CQRS and some not is the worst of both, and
+  // that is what happens when the answer lives only in a flag.
+  const source = await readFile(new URL('./commands/scaffold.ts', import.meta.url), 'utf8');
+  assert.match(source, /cqrs: options\.cqrs \?\? \(await projectPrefersCqrs\(root\)\)/);
+});

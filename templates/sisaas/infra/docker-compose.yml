@@ -1,8 +1,9 @@
 # Simbkit — local development infrastructure.
 #
 #   Core stack:   postgres, redis, minio (+ bucket setup), mailpit
-#   Events:       redpanda + debezium — MICROSERVICE deployments only. A single
-#                 deployable delivers events in-process and starts neither.
+#   Events:       redpanda + debezium — present when `--events kafka` was chosen.
+#                 With `--events in-process` a poller delivers events inside the
+#                 worker and neither container exists.
 #
 # Usage (from repo root):
 #   docker compose -f infra/docker-compose.yml up -d
@@ -157,7 +158,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik/host.yml:/etc/traefik/host.yml:ro
 
-  # si:profile-begin identity,service
+  # si:when-begin events-kafka
   # ---------------------------------------------------------------------------
   # Redpanda — Kafka API without the JVM or a separate coordinator. One container
   # instead of the Strimzi/KRaft stack the cluster runs; the wire protocol the
@@ -251,13 +252,13 @@ services:
       DEBEZIUM_TRANSFORMS_OUTBOX_ROUTE_BY_FIELD: aggregatetype
     volumes:
       - debezium-data:/debezium/data
-  # si:profile-end
+  # si:when-end
 
 volumes:
   postgres-data:
   redis-data:
   minio-data:
-  # si:profile-begin identity,service
+  # si:when-begin events-kafka
   redpanda-data:
   debezium-data:
-  # si:profile-end
+  # si:when-end

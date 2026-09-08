@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { findProject } from '../project.ts';
-import { nextFree, planPorts, readPortRequests } from '../ports.ts';
+import { nextFree, parameteriseCompose, planPorts, readPortRequests } from '../ports.ts';
 
 export interface StartOptions {
   /** Bring the stack up and stop, instead of running the app in the foreground. */
@@ -87,7 +87,24 @@ export async function startDev(options: StartOptions): Promise<void> {
   // Read out of the compose file rather than listed here, so a tool added with
   // `si add` gets a port allocated too: its fragment was merged into this same
   // file, and a hardcoded list in the CLI would know nothing about it.
-  const composeText = await readFile(composePath, 'utf8');
+  let composeText = await readFile(composePath, 'utf8');
+
+  // A project scaffolded before ports were allocatable has `- '9000:9000'`
+  // written out, and a literal is not something this can move — docker binds
+  // what the file says, and the failure is "port is already allocated" with no
+  // way to act on it. Migrate the file once, keeping every current port as the
+  // default, so from now on they CAN move.
+  const migrated = parameteriseCompose(composeText);
+  if (migrated.changed.length > 0) {
+    await writeFile(composePath, migrated.compose, 'utf8');
+    composeText = migrated.compose;
+    p.log.info(
+      `Made ${migrated.changed.length} host port(s) in infra/docker-compose.yml movable.\n` +
+        'Same ports as before — they are just overridable now, so a collision can be\n' +
+        'stepped around instead of stopping the stack.',
+    );
+  }
+
   const plan = await planPorts(readPortRequests(composeText));
 
   // The app's own two, which are host processes rather than containers.
@@ -123,9 +140,7 @@ export async function startDev(options: StartOptions): Promise<void> {
   const started = await run('docker', up, project.root, true, plan.env);
   if (started.code !== 0) {
     spin.stop(pc.red('docker compose failed'));
-    // The reason, verbatim. "Is Docker running?" is a guess, and it is wrong
-    // every time the real cause is something else.
-    throw new Error(started.stderr.trim() || 'docker compose exited non-zero with no output');
+    throw new Error(composeFailure(started.stderr));
   }
   const services = countServices(composeText);
   spin.stop(`${services} container${services === 1 ? '' : 's'} up`);
@@ -202,6 +217,31 @@ export async function startDev(options: StartOptions): Promise<void> {
   // The first to exit ends the run: if the API dies, sitting in a web-only
   // foreground pretending things are fine is worse than stopping.
   await Promise.race(children);
+}
+
+/**
+ * The reason, not the transcript.
+ *
+ * `docker compose up` narrates every container it touches, so dumping stderr
+ * verbatim buried the one line that mattered under thirty lines of "Container
+ * x Started". The error is the last thing it says; a port collision gets named
+ * outright, because that one has an answer.
+ */
+function composeFailure(stderr: string): string {
+  const lines = stderr.trim().split('\n').filter((l) => l.trim());
+  const error = [...lines].reverse().find((l) => /error|failed|cannot|denied/i.test(l));
+
+  const port = /Bind for [\d.]+:(\d+) failed: port is already allocated/.exec(stderr);
+  if (port) {
+    return (
+      `port ${port[1]} is already taken by something outside this project.\n\n` +
+      'si moves the ports it knows about, but a container left running from another\n' +
+      'stack holds this one. Find it with:\n' +
+      `  docker ps --filter publish=${port[1]}\n` +
+      'then stop it, or stop this project with `si stop` and start it again.'
+    );
+  }
+  return error ?? lines.at(-1) ?? 'docker compose exited non-zero with no output';
 }
 
 /** Every Postgres in the compose file — a per-service layout has several. */

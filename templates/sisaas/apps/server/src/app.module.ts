@@ -45,8 +45,8 @@ import { WidgetsModule } from './modules/widgets/widgets.module';
     AuditModule,
     AuthModule,
     SecurityModule,
-    EventsModule.forRoot({ consume: false, transport: 'in-process' }), // si:profile mono
-    EventsModule.forRoot({ consume: false, transport: 'kafka' }), // si:profile identity,service
+    EventsModule.forRoot({ consume: false, transport: 'in-process' }), // si:when events-in-process
+    EventsModule.forRoot({ consume: false, transport: 'kafka' }), // si:when events-kafka
     IamModule, // si:when auth-builtin
     MediaModule, // si:when storage-s3
     RealtimeModule,

@@ -144,6 +144,60 @@
       ]
     },
     {
+      "key": "events",
+      "question": "How do modules announce what happened?",
+      "default": "in-process",
+      "options": [
+        {
+          "value": "in-process",
+          "label": "In-process \u2014 a poller calls the handlers",
+          "description": "No broker to run. The outbox is still a real table, so splitting later swaps the transport, not the code.",
+          "features": [
+            "events-in-process"
+          ],
+          "notes": [
+            "The dev stack is five containers instead of eight. `si upgrade` cannot switch this for you later, but the change is one line in app.module.ts and worker.module.ts \u2014 publishers and handlers are identical either way."
+          ]
+        },
+        {
+          "value": "kafka",
+          "label": "Kafka \u2014 Debezium tails the write-ahead log",
+          "description": "For services that are, or will be, separate deployables. Adds Redpanda and Debezium to the dev stack.",
+          "features": [
+            "events-kafka"
+          ],
+          "tools": [],
+          "notes": [
+            "Nothing publishes to Kafka directly: a write and its outbox row commit together, and Debezium does the rest. That is what makes an event impossible to lose or to send for work that rolled back."
+          ]
+        }
+      ]
+    },
+    {
+      "key": "modules",
+      "question": "How is a feature module shaped?",
+      "default": "service",
+      "options": [
+        {
+          "value": "service",
+          "label": "A service holds the unit of work",
+          "description": "domain / application / infrastructure / interface, with one service opening the transaction. Start here.",
+          "features": []
+        },
+        {
+          "value": "cqrs",
+          "label": "Command and query handlers",
+          "description": "The same layering, with writes and reads as separate handlers. `si scaffold` then defaults to --cqrs.",
+          "features": [
+            "cqrs"
+          ],
+          "notes": [
+            "Worth it when reads and writes genuinely diverge \u2014 different shapes, different stores, different scaling. On a module where they do not, it is two files where one said the same thing."
+          ]
+        }
+      ]
+    },
+    {
       "key": "auth",
       "question": "Authentication and authorization",
       "default": "builtin",

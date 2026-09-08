@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import pc from 'picocolors';
 import { generate } from '@simbtech/si-nest';
 
@@ -32,6 +32,24 @@ async function findRoot(from: string): Promise<string> {
   }
 }
 
+/**
+ * The module shape this project chose at `si new`.
+ *
+ * Read back rather than asked again: a project that answered "CQRS" once should
+ * not need `--cqrs` on every scaffold, and a codebase with some modules one way
+ * and some the other is the worst of both.
+ */
+async function projectPrefersCqrs(root: string): Promise<boolean> {
+  try {
+    const record = JSON.parse(
+      await readFile(path.join(root, '.si', 'project.json'), 'utf8'),
+    ) as { modules?: string };
+    return record.modules === 'cqrs';
+  } catch {
+    return false;
+  }
+}
+
 export async function scaffold(entity: string, options: ScaffoldOptions): Promise<void> {
   const root = options.path ? path.resolve(options.path) : await findRoot(process.cwd());
 
@@ -40,7 +58,7 @@ export async function scaffold(entity: string, options: ScaffoldOptions): Promis
     entity,
     module: options.module,
     fields: options.fields,
-    cqrs: options.cqrs ?? false,
+    cqrs: options.cqrs ?? (await projectPrefersCqrs(root)),
     // Default ON. A SaaS feature table that forgets tenant scoping is a data
     // leak, so opting out has to be the deliberate act.
     tenantScoped: options.tenantScoped ?? true,

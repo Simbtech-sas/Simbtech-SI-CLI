@@ -40,8 +40,8 @@ import { AuditModule } from './modules/audit/audit.module';
     }),
     // The worker owns event consumption and the outbox prune schedule.
     ScheduleModule.forRoot(),
-    EventsModule.forRoot({ consume: true, transport: 'in-process' }), // si:profile mono
-    EventsModule.forRoot({ consume: true, transport: 'kafka' }), // si:profile identity,service
+    EventsModule.forRoot({ consume: true, transport: 'in-process' }), // si:when events-in-process
+    EventsModule.forRoot({ consume: true, transport: 'kafka' }), // si:when events-kafka
     JobsModule,
     // Feature modules must be imported HERE too, or their event handlers never
     // register and the consumer subscribes to nothing. Controllers they declare

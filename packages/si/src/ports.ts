@@ -105,3 +105,81 @@ export function readPortRequests(compose: string): PortRequest[] {
   }
   return requests;
 }
+
+/**
+ * The names the shipped templates use, so a project migrated by the CLI ends up
+ * with the same variables a freshly scaffolded one has. Anything not listed
+ * falls back to `<SERVICE>_HOST_PORT`, numbered when a service publishes more
+ * than one.
+ */
+const TEMPLATE_NAMES: Record<string, string[]> = {
+  minio: ['MINIO_HOST_PORT', 'MINIO_CONSOLE_HOST_PORT'],
+  mailpit: ['MAILPIT_SMTP_HOST_PORT', 'MAILPIT_HOST_PORT'],
+  traefik: ['GATEWAY_HOST_PORT', 'GATEWAY_DASHBOARD_HOST_PORT'],
+  redpanda: ['KAFKA_HOST_PORT', 'KAFKA_ADMIN_HOST_PORT'],
+  'redpanda-console': ['KAFKA_CONSOLE_HOST_PORT'],
+  postgres: ['POSTGRES_HOST_PORT'],
+  redis: ['REDIS_HOST_PORT'],
+};
+
+export interface Parameterised {
+  compose: string;
+  /** `service: 9000` for each literal that became a variable. */
+  changed: Array<{ service: string; port: number; env: string }>;
+}
+
+/**
+ * Turn literal host ports into `${NAME_HOST_PORT:-default}`.
+ *
+ * Projects scaffolded before this existed have `- '9000:9000'` written out, and
+ * a literal is not something the CLI can move — docker binds what the file
+ * says. So the file is migrated once, in place, keeping every current port as
+ * the default. Nothing about the running stack changes; the ports just become
+ * something that CAN be moved when one is taken.
+ *
+ * Idempotent: a file that is already parameterised comes back unchanged.
+ */
+export function parameteriseCompose(compose: string): Parameterised {
+  const lines = compose.split('\n');
+  const changed: Parameterised['changed'] = [];
+  const used = new Set<string>();
+  let service: string | null = null;
+  let inPorts = false;
+  let nth = 0;
+
+  for (const [i, line] of lines.entries()) {
+    const svc = /^ {2}([a-z0-9][\w-]*):\s*$/.exec(line);
+    if (svc) {
+      service = svc[1]!;
+      inPorts = false;
+      nth = 0;
+      continue;
+    }
+    if (/^ {4}ports:\s*$/.test(line)) {
+      inPorts = true;
+      continue;
+    }
+    if (/^ {4}[a-z_]+:/.test(line)) inPorts = false;
+    if (!inPorts || !service) continue;
+
+    // Only a literal `host:container`. An existing `${...}` is left alone, which
+    // is what makes running this twice a no-op.
+    const literal = /^(\s+- )['"]?(\d+):(\d+)['"]?(.*)$/.exec(line);
+    if (!literal) continue;
+    const [, indent, host, container, tail] = literal;
+
+    nth += 1;
+    const preferred = TEMPLATE_NAMES[service]?.[nth - 1];
+    const generic =
+      `${service.replace(/-/g, '_').toUpperCase()}_HOST_PORT` + (nth === 1 ? '' : `_${nth}`);
+    let env = preferred ?? generic;
+    // Two services publishing the same-named variable would move together.
+    while (used.has(env)) env = `${generic}_${used.size}`;
+    used.add(env);
+
+    lines[i] = `${indent}'\${${env}:-${host}}:${container}'${tail}`;
+    changed.push({ service, port: Number(host), env });
+  }
+
+  return { compose: lines.join('\n'), changed };
+}

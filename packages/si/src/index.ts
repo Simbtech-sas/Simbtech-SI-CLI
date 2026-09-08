@@ -25,6 +25,11 @@ const commands: CommandDef[] = [
       { flags: '-f, --flavor <flavor>', description: FLAVORS.map((f) => f.id).join(' | ') },
       { flags: '-b, --brand <brand>', description: 'brand slug (lowercase, 2-31 chars)' },
       { flags: '-p, --profile <profile>', description: 'mono (single deployable) | identity | service — prompted if omitted' },
+      {
+        flags: '--events <choice>',
+        description: 'in-process | kafka — how modules announce what happened',
+      },
+      { flags: '--modules <choice>', description: 'service | cqrs' },
       { flags: '--auth <choice>', description: 'builtin | keycloak | zitadel | none' },
       { flags: '--storage <choice>', description: 'minio | s3 | none' },
       { flags: '--uploads <choice>', description: 'presigned | tusd | none' },

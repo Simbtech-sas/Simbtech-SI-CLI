@@ -40,6 +40,10 @@ export interface NewOptions {
   payments?: string;
   /** `--tool a b c`. Given, the picker is skipped entirely. */
   tool?: string[];
+  /** in-process | kafka. How modules announce what happened. */
+  events?: string;
+  /** service | cqrs. The shape `si scaffold` emits. */
+  modules?: string;
   /** shared | per-service. Multi-service layouts only. */
   data?: string;
   /** Scaffold a flavor that is not finished. */
@@ -212,6 +216,12 @@ export async function newProject(name: string | undefined, options: NewOptions):
     const selected: Record<string, string | undefined> = {
       // Fixed by the flavor — SiAPP IS `tenancy: single`, so it is never asked.
       ...flavorChoices(flavor),
+      // Separate deployables have to talk over something, so the profile picks
+      // the default rather than the template's — but the user can still say.
+      events:
+        options.events ??
+        (resolved?.name && resolved.name !== 'mono' ? 'kafka' : undefined),
+      modules: options.modules,
       auth: options.auth,
       storage: options.storage,
       uploads: options.uploads,
@@ -406,6 +416,9 @@ export async function newProject(name: string | undefined, options: NewOptions):
           brand,
           layout: resolved?.name ?? 'mono',
           data: dataTopology ?? 'shared',
+          // `si scaffold` reads this so a project that chose CQRS keeps getting
+          // CQRS without anyone remembering the flag.
+          modules: selected['modules'] ?? 'service',
           choices: Object.fromEntries(
             Object.entries(selected).filter(([, v]) => v !== undefined),
           ),
@@ -523,6 +536,15 @@ function assertCoherent(profile: string | undefined, choices: readonly ResolvedC
     throw new Error(
       `an identity service exists to issue tokens, so --auth ${String(auth)} leaves it with nothing to do.\n` +
         'Use --auth builtin, or scaffold a feature service with --profile service.',
+    );
+  }
+
+  const events = choices.find((c) => c.key === 'events')?.option.value;
+  if (profile && profile !== 'mono' && events === 'in-process') {
+    throw new Error(
+      `the ${profile} profile is a separate deployable, and in-process events are delivered ` +
+        'inside the process that published them — so nothing else would ever receive one.\n' +
+        'Use --events kafka, or scaffold a single deployable with --profile mono.',
     );
   }
 

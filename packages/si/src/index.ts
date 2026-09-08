@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import pc from 'picocolors';
 import { register, type CommandDef } from './registry.ts';
@@ -16,7 +17,7 @@ import { listTools, type ListOptions } from './commands/list.ts';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
-const commands: CommandDef[] = [
+export const commands: CommandDef[] = [
   {
     name: 'new',
     description: 'Scaffold a new project',
@@ -174,9 +175,19 @@ for (const def of commands) register(program, def);
 
 // Deliberately no update check on startup: it makes every invocation depend on
 // the network and stalls CI.
-try {
-  await program.parseAsync(process.argv);
-} catch (err) {
-  console.error(pc.red('error: ') + (err instanceof Error ? err.message : String(err)));
-  process.exitCode = 1;
+//
+// Guarded so importing this module does not run the CLI. Tests read `commands`
+// to check that the docs cite commands that exist, and an unguarded parse means
+// importing it prints the help text and exits — which is exactly what happened.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  try {
+    await program.parseAsync(process.argv);
+  } catch (err) {
+    console.error(pc.red('error: ') + (err instanceof Error ? err.message : String(err)));
+    process.exitCode = 1;
+  }
 }

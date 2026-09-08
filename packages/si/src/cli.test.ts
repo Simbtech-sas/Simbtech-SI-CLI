@@ -698,3 +698,52 @@ test('scaffold takes the module shape from the project, not a flag you must reme
   const source = await readFile(new URL('./commands/scaffold.ts', import.meta.url), 'utf8');
   assert.match(source, /cqrs: options\.cqrs \?\? \(await projectPrefersCqrs\(root\)\)/);
 });
+
+test('agent rules cite si commands and docs that actually exist', async () => {
+  // Rules that name a command which does not exist are worse than no rules: an
+  // agent runs it, it fails, and the file loses its authority for everything
+  // else it says. The pnpm-script version of this check already exists; this is
+  // the same idea for `si <command>` and for the docs they point at.
+  const { readdir, access } = await import('node:fs/promises');
+  const root = new URL('../../../templates/', import.meta.url);
+
+  // The real command surface, from the registry the CLI is built from.
+  const { commands } = await import('./index.ts');
+  const known = new Set(commands.map((c) => c.name));
+  assert.ok(known.has('scaffold') && known.has('upgrade'), 'the registry did not load');
+
+  const flavors = (await readdir(root, { withFileTypes: true }))
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+  assert.ok(flavors.length >= 7);
+
+  for (const flavor of flavors) {
+    const rules = await readFile(new URL(`${flavor}/AGENTS.md`, root), 'utf8');
+
+    // Every `si <word>` named in the rules must be a command.
+    for (const match of rules.matchAll(/\bsi ([a-z][a-z-]*)/g)) {
+      const name = match[1]!;
+      assert.ok(
+        known.has(name),
+        `${flavor}/AGENTS.md says \`si ${name}\`, which is not a command. ` +
+          `Known: ${[...known].join(', ')}`,
+      );
+    }
+
+    // Every doc it points at must be shipped by that flavor.
+    for (const match of rules.matchAll(/`(docs\/[A-Za-z0-9._/-]+\.md)`/g)) {
+      const rel = match[1]!;
+      await assert.doesNotReject(
+        access(new URL(`${flavor}/${rel}`, root)),
+        `${flavor}/AGENTS.md points at ${rel}, which that flavor does not ship`,
+      );
+    }
+
+    // And the CLI reference itself must not promise a command that is not real.
+    const doc = await readFile(new URL(`${flavor}/docs/SI-CLI.md`, root), 'utf8').catch(() => '');
+    for (const match of doc.matchAll(/`si ([a-z][a-z-]*)/g)) {
+      const name = match[1]!;
+      assert.ok(known.has(name), `${flavor}/docs/SI-CLI.md documents \`si ${name}\`, which does not exist`);
+    }
+  }
+});

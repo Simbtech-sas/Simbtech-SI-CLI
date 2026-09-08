@@ -1,0 +1,167 @@
+/**
+ * Every command the CLI exposes, as data.
+ *
+ * A separate module from `index.ts` on purpose: `index.ts` parses argv and runs
+ * the program the moment it is imported, so anything that only wants the list —
+ * the test that checks AGENTS.md cites commands that exist — would otherwise
+ * launch the CLI to read it.
+ *
+ * Guarding the bootstrap instead was the first attempt, and it shipped a CLI
+ * that did nothing: `process.argv[1]` is the bin SYMLINK, `import.meta.url` is
+ * the real path, so the guard was false for every user who ran `si` rather than
+ * `node dist/index.js`. This has no such failure mode.
+ */
+import { type CommandDef } from './registry.ts';
+import { FLAVORS } from './flavors.ts';
+import { doctor } from './commands/doctor.ts';
+import { newProject, type NewOptions } from './commands/new.ts';
+import { scaffold, type ScaffoldOptions } from './commands/scaffold.ts';
+import { addApi, type ApiOptions } from './commands/api.ts';
+import { startDev, stopDev, type StartOptions } from './commands/start.ts';
+import { compliance, type ComplianceOptions } from './commands/compliance.ts';
+import { addTools, type AddOptions } from './commands/add.ts';
+import { upgrade, type UpgradeOptions } from './commands/upgrade.ts';
+import { listTools, type ListOptions } from './commands/list.ts';
+
+export const commands: CommandDef[] = [
+  {
+    name: 'new',
+    description: 'Scaffold a new project',
+    args: [{ name: 'directory', description: 'where to create it', required: false }],
+    options: [
+      { flags: '-f, --flavor <flavor>', description: FLAVORS.map((f) => f.id).join(' | ') },
+      { flags: '-b, --brand <brand>', description: 'brand slug (lowercase, 2-31 chars)' },
+      { flags: '-p, --profile <profile>', description: 'mono (single deployable) | identity | service — prompted if omitted' },
+      {
+        flags: '--events <choice>',
+        description: 'in-process | kafka — how modules announce what happened',
+      },
+      { flags: '--modules <choice>', description: 'service | cqrs' },
+      { flags: '--auth <choice>', description: 'builtin | keycloak | zitadel | none' },
+      { flags: '--storage <choice>', description: 'minio | s3 | none' },
+      { flags: '--uploads <choice>', description: 'presigned | tusd | none' },
+      { flags: '--workflows <choice>', description: 'none | temporal' },
+      { flags: '--observability <choice>', description: 'none | umami | posthog | openreplay' },
+      { flags: '--loadtest <choice>', description: 'k6 | none' },
+      { flags: '--payments <choice>', description: 'none | kpay | joonapay | both' },
+      { flags: '--tool <id...>', description: 'open-source tools to wire in; skips the picker' },
+      { flags: '--data <choice>', description: 'shared | per-service (multi-service layouts)' },
+      { flags: '--database <choice>', description: 'SiMICE: sqlite | postgres' },
+      { flags: '--mode <choice>', description: 'SiMICE: standalone | lan-server | cloud-sync' },
+      { flags: '--blank', description: 'opt out of every choice — just the skeleton' },
+      { flags: '--force', description: 'scaffold a flavor that is not finished yet' },
+      { flags: '--skip-install', description: 'scaffold without running the package manager' },
+      { flags: '--ref <ref>', description: 'template git ref (tag, branch or sha)' },
+      { flags: '-y, --yes', description: 'no prompts; fail if an answer is missing' },
+    ],
+    run: ((directory: string | undefined, options: NewOptions) =>
+      newProject(directory, options)) as CommandDef['run'],
+  },
+  {
+    name: 'scaffold',
+    aliases: ['s'],
+    description: 'Generate a full feature module: schema, migration, repository, service, DTOs, controller',
+    args: [{ name: 'entity', description: 'entity name, e.g. Product' }],
+    options: [
+      { flags: '-m, --module <module>', description: 'module folder (defaults to the plural entity)' },
+      { flags: '-f, --fields <spec>', description: 'e.g. "name:string price:money:optional sku:string:unique"' },
+      { flags: '--cqrs', description: 'emit command/query handlers instead of a service' },
+      { flags: '--no-tenant-scoped', description: 'omit tenant_id, the FK and the RLS policy' },
+      { flags: '--no-events', description: 'do not publish domain events to the outbox' },
+      { flags: '--dry-run', description: 'print what would be written, write nothing' },
+      { flags: '--force', description: 'overwrite files that already exist' },
+      { flags: '--path <dir>', description: 'project root (defaults to the nearest one above cwd)' },
+    ],
+    run: ((entity: string, options: ScaffoldOptions) => scaffold(entity, options)) as CommandDef['run'],
+  },
+  {
+    name: 'api',
+    description: 'Add another API service to this project, reusing its decisions',
+    args: [{ name: 'name', description: 'service name, e.g. billing' }],
+    options: [
+      { flags: '--auth <choice>', description: 'keycloak | zitadel | none (inherited when it can be)' },
+      { flags: '--tool <id...>', description: 'tools to wire into this service' },
+      { flags: '--dir <path>', description: 'where services live (default: services)' },
+      { flags: '--skip-install', description: 'write files but do not run the package manager' },
+      { flags: '-y, --yes', description: 'accept every default' },
+    ],
+    run: ((name: string, options: ApiOptions) => addApi(name, options)) as CommandDef['run'],
+  },
+  {
+    name: 'start',
+    description: 'Bring up the whole dev stack and run the app — one command',
+    args: [{ name: 'what', description: 'dev (default)', required: false }],
+    options: [
+      { flags: '-d, --detach', description: 'start the dependencies only, do not run the app' },
+      { flags: '--skip-migrate', description: 'do not apply migrations' },
+      { flags: '--scale <svc=n>', description: 'run N replicas, e.g. server=3, to exercise the balancer' },
+    ],
+    run: ((what: string | undefined, options: StartOptions) => {
+      if (what && what !== 'dev') throw new Error(`unknown target "${what}" — only \`si start dev\` exists`);
+      return startDev(options);
+    }) as CommandDef['run'],
+  },
+  {
+    name: 'stop',
+    description: 'Stop the dev stack',
+    options: [{ flags: '--volumes', description: 'delete the data too' }],
+    run: ((options: { volumes?: boolean }) => stopDev(options)) as CommandDef['run'],
+  },
+  {
+    name: 'add',
+    description: 'Wire an open-source tool into this project (deps, compose, env, module)',
+    args: [{ name: 'tools', description: 'tool ids, e.g. livekit blnk', variadic: true }],
+    options: [
+      { flags: '--dry-run', description: 'show what would change, change nothing' },
+      { flags: '--skip-install', description: 'write files but do not run the package manager' },
+      { flags: '--path <dir>', description: 'project root (defaults to the nearest one above cwd)' },
+    ],
+    // The return value is for `si new`, which needs to report what it could not
+    // record; the CLI itself has nothing to do with it.
+    run: (async (tools: string[], options: AddOptions) => {
+      await addTools(tools, options);
+    }) as CommandDef['run'],
+  },
+  {
+    name: 'upgrade',
+    description: 'Move this project onto a newer template, without eating your edits',
+    options: [
+      { flags: '--ref <ref>', description: 'template git ref (tag, branch or sha)' },
+      { flags: '--dry-run', description: 'report what would change, change nothing' },
+      {
+        flags: '--force',
+        description: 'take the new version of files you edited, discarding your changes',
+      },
+    ],
+    run: (async (options: UpgradeOptions) => {
+      await upgrade(options);
+    }) as CommandDef['run'],
+  },
+  {
+    name: 'list',
+    description: 'Browse the registry of tools and prebuilt features',
+    args: [{ name: 'what', description: 'tools | features | all', required: false }],
+    options: [
+      { flags: '-c, --category <category>', description: 'filter by category' },
+      { flags: '-f, --flavor <flavor>', description: 'show what applies to a flavor' },
+      { flags: '-a, --all', description: 'ignore the current project and show everything' },
+    ],
+    run: ((what: string | undefined, options: ListOptions) => listTools(what, options)) as CommandDef['run'],
+  },
+  {
+    name: 'compliance',
+    description: 'Report this project against a compliance framework — evidence, not claims',
+    options: [
+      { flags: '--framework <id>', description: 'which framework (default: the first available)' },
+      { flags: '--write', description: 'also write docs/compliance/<id>.md' },
+      { flags: '--strict', description: 'exit non-zero if anything is missing' },
+      { flags: '--fix', description: 'install every feature that closes a missing requirement' },
+    ],
+    run: ((options: ComplianceOptions) => compliance(options)) as CommandDef['run'],
+  },
+  {
+    name: 'doctor',
+    description: 'Check the local toolchain and report which flavors are ready to scaffold',
+    run: doctor,
+  },
+];

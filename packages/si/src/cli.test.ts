@@ -708,7 +708,7 @@ test('agent rules cite si commands and docs that actually exist', async () => {
   const root = new URL('../../../templates/', import.meta.url);
 
   // The real command surface, from the registry the CLI is built from.
-  const { commands } = await import('./index.ts');
+  const { commands } = await import('./commands-registry.ts');
   const known = new Set(commands.map((c) => c.name));
   assert.ok(known.has('scaffold') && known.has('upgrade'), 'the registry did not load');
 
@@ -745,5 +745,41 @@ test('agent rules cite si commands and docs that actually exist', async () => {
       const name = match[1]!;
       assert.ok(known.has(name), `${flavor}/docs/SI-CLI.md documents \`si ${name}\`, which does not exist`);
     }
+  }
+});
+
+test('the CLI runs when invoked through a symlink, as npm installs it', async () => {
+  // 0.6.1 shipped a CLI that did nothing. The bootstrap had been guarded on
+  // `import.meta.url === pathToFileURL(process.argv[1]).href` so that importing
+  // the module for its command list would not run the program — but npm puts a
+  // SYMLINK in node_modules/.bin, so argv[1] is the link and import.meta.url is
+  // the real path. The guard was false for every user who typed `si`, and the
+  // failure was silent: no output, no exit code, nothing.
+  //
+  // The registry lives in its own module now, so there is no guard to get
+  // wrong. This runs the built CLI the way npm does.
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const { symlink, mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = (await import('node:path')).default;
+  const run = promisify(execFile);
+
+  const dist = new URL('../dist/index.js', import.meta.url);
+  const built = await readFile(dist, 'utf8').catch(() => '');
+  if (!built) return; // not built yet; `pnpm build` runs before the release anyway
+
+  const dir = await mkdtemp(path.join(tmpdir(), 'si-bin-'));
+  try {
+    const link = path.join(dir, 'si');
+    await symlink(path.resolve(dist.pathname), link);
+    const { stdout } = await run(process.execPath, [link, '--version']);
+    assert.match(
+      stdout.trim(),
+      /^\d+\.\d+\.\d+$/,
+      'the CLI produced no version through a symlink — it is inert for anyone who installed it',
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
   }
 });

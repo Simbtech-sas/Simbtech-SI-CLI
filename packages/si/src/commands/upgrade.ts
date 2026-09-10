@@ -16,7 +16,7 @@ import {
 } from '@simbtech/si-core';
 import { findProject } from '../project.ts';
 import { findFlavor, flavorTemplate } from '../flavors.ts';
-import { fingerprint, type Fingerprint } from '../fingerprint.ts';
+import { fingerprint, hash, type Fingerprint } from '../fingerprint.ts';
 import { CLI_VERSION } from '../version.ts';
 
 export interface UpgradeOptions {
@@ -175,8 +175,27 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
 
     // ── apply ───────────────────────────────────────────────────────────────
+    //
+    // The classification says what SHOULD happen; this checks the disk before
+    // doing it. Those are different things, and the difference is the bug this
+    // guards against: a file the walk failed to see is classified `added`, and
+    // `added` writes. A symlinked directory did exactly that once — invisible to
+    // the walk, so every file under it looked absent and got overwritten.
+    //
+    // The invariant, enforced here rather than inferred: a file that exists is
+    // only ever written when its content matches what we originally wrote.
     spin.start('Writing');
+    const refused: string[] = [];
     for (const change of [...added, ...updated]) {
+      const target = path.join(project.root, change.file);
+      const onDisk = await hashOf(target);
+      const original = baseline?.[change.file];
+
+      if (!mayReplace(onDisk, original, incoming[change.file])) {
+        refused.push(change.file);
+        await copyInto(dest, project.root, change.file, `${change.file}.si-new`);
+        continue;
+      }
       await copyInto(dest, project.root, change.file);
     }
     for (const change of conflicts) {
@@ -190,6 +209,15 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     }
     spin.stop(`Wrote ${added.length + updated.length + conflicts.length} file(s)`);
 
+    if (refused.length > 0) {
+      // Worth saying loudly. It means the classification and the disk disagreed,
+      // which is a bug in the walk, not a normal outcome.
+      p.log.warn(
+        `These exist and did not match what si wrote, so they were NOT replaced —\n` +
+          `each is beside your copy as .si-new:\n  ${refused.join('\n  ')}`,
+      );
+    }
+
     // The new baseline is "the template content this project is now at" — NOT a
     // fresh fingerprint of the working tree.
     //
@@ -199,7 +227,9 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     // pristine file and overwrite you without asking. A file keeps its old
     // baseline until we actually apply the template's version of it.
     const nextBaseline: Fingerprint = { ...(baseline ?? {}) };
+    const wasRefused = new Set(refused);
     for (const change of [...added, ...updated]) {
+      if (wasRefused.has(change.file)) continue;
       nextBaseline[change.file] = incoming[change.file]!;
     }
     if (options.force) {
@@ -239,6 +269,38 @@ export async function upgrade(options: UpgradeOptions): Promise<void> {
     );
   } finally {
     await rm(work, { recursive: true, force: true });
+  }
+}
+
+/**
+ * May this file be written over?
+ *
+ * The one rule the whole command rests on, kept as a function so it can be
+ * tested rather than inferred from a loop: a file that exists is replaced only
+ * when it is byte-for-byte what si last wrote there, or already what si is
+ * about to write. Anything else on disk is somebody's work.
+ *
+ * Deliberately independent of the classification. A file the directory walk
+ * failed to see is classified as new, and "new" means write — a symlinked
+ * directory was invisible to that walk once, and everything under it was
+ * overwritten. This is the check that makes such a bug harmless.
+ */
+export function mayReplace(
+  onDisk: string | undefined,
+  original: string | undefined,
+  incoming: string | undefined,
+): boolean {
+  if (onDisk === undefined) return true; // genuinely absent
+  if (onDisk === incoming) return true; // already identical; writing changes nothing
+  return onDisk === original; // untouched since we wrote it
+}
+
+/** The hash of a file on disk, or undefined when it is not there. */
+async function hashOf(file: string): Promise<string | undefined> {
+  try {
+    return hash(await readFile(file));
+  } catch {
+    return undefined;
   }
 }
 

@@ -835,3 +835,51 @@ test('every flavor that serves a UI binds it where a phone can reach it', async 
   };
   assert.equal(sical.dev.lan, false, 'SiCAL must opt out of the LAN — it promises no network');
 });
+
+test('upgrade never replaces a file that is not what si last wrote', async () => {
+  // The reported bug: `si upgrade` overwrote a user's `src/app/page.tsx`.
+  //
+  // The mechanism was the directory walk, not the classification. `apps/web`
+  // as a SYMLINK is invisible to `readdir(withFileTypes)` — `isDirectory()` is
+  // false for a link — so every file under it looked absent, was classified
+  // "added", and "added" writes.
+  //
+  // The walk is fixed, but the guarantee must not depend on the walk being
+  // right. This is the rule that holds even when it is wrong.
+  const { mayReplace } = await import('./commands/upgrade.ts');
+
+  const mine = 'aaaa', ours = 'bbbb', theirs = 'cccc';
+
+  assert.equal(mayReplace(undefined, undefined, theirs), true, 'absent: write it');
+  assert.equal(mayReplace(ours, ours, theirs), true, 'untouched since we wrote it: safe');
+  assert.equal(mayReplace(theirs, ours, theirs), true, 'already identical: a no-op');
+
+  assert.equal(mayReplace(mine, ours, theirs), false, 'edited by the user: never');
+  assert.equal(
+    mayReplace(mine, undefined, theirs),
+    false,
+    'no baseline is not permission — an unrecognised file is somebody’s work',
+  );
+});
+
+test('the fingerprint sees through a symlinked directory', async () => {
+  // pnpm workspaces and hand-moved app folders both produce these, and a
+  // subtree the walk cannot see reads to `si upgrade` as files the project does
+  // not have — which is a licence to write them.
+  const { fingerprint } = await import('./fingerprint.ts');
+  const { mkdtemp, mkdir, writeFile, symlink } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const path = (await import('node:path')).default;
+
+  const dir = await mkdtemp(path.join(tmpdir(), 'si-fp-'));
+  await mkdir(path.join(dir, 'real', 'app'), { recursive: true });
+  await writeFile(path.join(dir, 'real', 'app', 'page.tsx'), 'export default function Home() {}');
+  await mkdir(path.join(dir, 'apps'), { recursive: true });
+  await symlink(path.join(dir, 'real'), path.join(dir, 'apps', 'web'));
+
+  const seen = Object.keys(await fingerprint(dir));
+  assert.ok(
+    seen.some((f) => f.includes(`apps${path.sep}web`)),
+    `a symlinked app directory was invisible to the walk: ${seen.join(', ')}`,
+  );
+});

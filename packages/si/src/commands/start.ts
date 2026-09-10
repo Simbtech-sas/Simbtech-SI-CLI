@@ -7,6 +7,7 @@ import { findProject } from '../project.ts';
 import type { TemplateDev } from '@simbtech/si-core';
 import { nextFree, parameteriseCompose, planPorts, readPortRequests } from '../ports.ts';
 import { lanAddress } from '../lan.ts';
+import { hotkeyHelp, onHotkeys, supervise, type Hotkey, type Managed } from '../dev-console.ts';
 
 export interface StartOptions {
   /** Bring the stack up and stop, instead of running the app in the foreground. */
@@ -225,8 +226,7 @@ export async function startDev(options: StartOptions): Promise<void> {
   // worker is where event delivery and background jobs live, so without it the
   // outbox fills and nothing handles a job — the app looks like it works right
   // up until you check whether anything happened.
-  const children: Array<Promise<RunResult>> = [];
-  const running: string[] = [];
+  const managed: Managed[] = [];
 
   for (const proc of dev.processes) {
     const cwd = proc.cwd ? path.join(project.root, proc.cwd) : project.root;
@@ -246,32 +246,56 @@ export async function startDev(options: StartOptions): Promise<void> {
       env['NEXT_PUBLIC_API_URL'] = `http://${host}:${apiPort}`;
     }
 
-    const [cmd, ...args] = proc.run;
-    children.push(run(cmd!, args, cwd, false, env));
-    running.push(proc.label);
+    managed.push({ label: proc.label, cwd, run: proc.run, env });
   }
 
-  if (children.length === 0) {
+  if (managed.length === 0) {
     p.outro('Nothing to run — this template declares no dev processes.');
     return;
   }
 
-  p.log.info(
-    `Starting ${running.join(', ')} — ${pc.dim('Ctrl-C stops them; containers keep running')}`,
-  );
+  const webProc = dev.processes.find((proc) => proc.port === 'web');
+  const webUrl = webProc ? `http://${host}:${webPort}` : undefined;
+  const showQr = Boolean(webUrl) && onLan && host !== 'localhost';
+
+  const supervisor = supervise(managed);
+
+  let quit: () => void = () => {};
+  const finished = new Promise<void>((resolve) => {
+    quit = resolve;
+  });
+
+  const keys: Hotkey[] = [
+    { key: 'r', describe: 'restart all', run: () => supervisor.restart() },
+    ...(webProc
+      ? [{ key: 'f', describe: 'restart the front end', run: () => supervisor.restart(webProc.label) }]
+      : []),
+    { key: 'u', describe: 'show urls', run: () => console.log(`\n${urls.join('\n')}\n`) },
+    ...(showQr
+      ? [{ key: 's', describe: 'show the qr code', run: () => printQr(webUrl!, webProc!.label) }]
+      : []),
+    { key: 'c', describe: 'clear', run: () => console.clear() },
+    { key: 'h', describe: 'help', run: () => console.log(`\n  ${hotkeyHelp(keys)}\n`) },
+    { key: 'q', describe: 'stop', run: () => quit() },
+  ];
+
+  const release = onHotkeys(keys, quit);
+  console.log(`\n  ${hotkeyHelp(keys)}\n`);
 
   // The QR comes AFTER the server answers, not with the startup banner. A code
   // printed while Next is still compiling gets scanned during those seconds and
-  // shows a connection error, and the natural conclusion is that the feature is
-  // broken rather than early.
-  const webProc = dev.processes.find((proc) => proc.port === 'web');
-  if (webProc && onLan && host !== 'localhost') {
-    void announceOnLan(`http://${host}:${webPort}`, webProc.label);
-  }
+  // shows a connection error, and the conclusion is that the feature is broken
+  // rather than early.
+  if (showQr) void announceOnLan(webUrl!, webProc!.label);
 
-  // The first to exit ends the run: if the API dies, sitting in a web-only
-  // foreground pretending things are fine is worse than stopping.
-  await Promise.race(children);
+  // Whichever comes first: a process dying on its own, or the user quitting.
+  // Sitting in a web-only foreground after the API has died, pretending things
+  // are fine, is worse than stopping.
+  await Promise.race([finished, supervisor.whenAnyExits]);
+
+  release();
+  await supervisor.stop();
+  p.outro(`Stopped. ${pc.dim('Containers are still up — `si stop` takes them down.')}`);
 }
 
 /**
@@ -353,21 +377,26 @@ async function announceOnLan(url: string, label: string): Promise<void> {
   const deadline = Date.now() + 90_000;
   while (Date.now() < deadline) {
     if (await answers(url)) {
-      try {
-        const qr = (await import('qrcode-terminal')).default;
-        qr.generate(url, { small: true }, (code: string) => {
-          console.log(`\n${code}`);
-          console.log(`  ${pc.cyan(url)}  ${pc.dim(`— the ${label}, on your phone`)}`);
-          console.log(
-            `  ${pc.dim('Same Wi-Fi as this machine. If it will not load, check the firewall.')}\n`,
-          );
-        });
-      } catch {
-        // No QR is fine; the URL is in the summary above.
-      }
+      await printQr(url, label);
       return;
     }
     await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+/** The QR itself. Also bound to a hotkey, so it can be asked for again. */
+async function printQr(url: string, label: string): Promise<void> {
+  try {
+    const qr = (await import('qrcode-terminal')).default;
+    qr.generate(url, { small: true }, (code: string) => {
+      console.log(`\n${code}`);
+      console.log(`  ${pc.cyan(url)}  ${pc.dim(`— the ${label}, on your phone`)}`);
+      console.log(
+        `  ${pc.dim('Same Wi-Fi as this machine. If it will not load, check the firewall.')}\n`,
+      );
+    });
+  } catch {
+    // No QR is fine; the URL is in the summary above.
   }
 }
 

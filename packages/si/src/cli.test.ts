@@ -883,3 +883,121 @@ test('the fingerprint sees through a symlinked directory', async () => {
     `a symlinked app directory was invisible to the walk: ${seen.join(', ')}`,
   );
 });
+
+test('hotkeys dispatch, and Ctrl-C still quits in raw mode', async () => {
+  // Raw mode means the terminal stops turning Ctrl-C into SIGINT, so if this
+  // handler does not deal with it the dev server becomes unquittable. That is
+  // the part worth a test — a shortcut that does not fire is an annoyance, a
+  // process you cannot stop is not.
+  const { onHotkeys } = await import('./dev-console.ts');
+  const { EventEmitter } = await import('node:events');
+
+  const CTRL_C = String.fromCharCode(3);
+  const CTRL_D = String.fromCharCode(4);
+  const fired: string[] = [];
+  let quit = 0;
+
+  // A stdin that claims to be a terminal, so the raw-mode path is exercised.
+  const fake = Object.assign(new EventEmitter(), {
+    isTTY: true,
+    setRawMode(): void {},
+    resume(): void {},
+    pause(): void {},
+    setEncoding(): void {},
+  });
+  const real = Object.getOwnPropertyDescriptor(process, 'stdin');
+  Object.defineProperty(process, 'stdin', { value: fake, configurable: true });
+
+  try {
+    const release = onHotkeys(
+      [
+        { key: 'r', describe: 'restart', run: () => fired.push('restart') },
+        { key: 's', describe: 'qr', run: () => fired.push('qr') },
+      ],
+      () => {
+        quit += 1;
+      },
+    );
+
+    fake.emit('data', 'r');
+    fake.emit('data', 'S'); // shift is a slip, not a different key
+    fake.emit('data', 'z'); // unbound keys are ignored, not errors
+    assert.deepEqual(fired, ['restart', 'qr']);
+
+    fake.emit('data', CTRL_C);
+    assert.equal(quit, 1, 'Ctrl-C must quit — raw mode means nothing else will');
+    fake.emit('data', CTRL_D);
+    assert.equal(quit, 2);
+
+    release();
+    fake.emit('data', 'r');
+    assert.deepEqual(fired, ['restart', 'qr'], 'a released handler must stop listening');
+  } finally {
+    if (real) Object.defineProperty(process, 'stdin', real);
+  }
+});
+
+test('a non-terminal stdin skips raw mode instead of throwing', async () => {
+  // `si start dev > log.txt`, and CI. setRawMode throws on a pipe, and a dev
+  // server that cannot run redirected would be a poor trade for a shortcut.
+  const { onHotkeys } = await import('./dev-console.ts');
+  const { EventEmitter } = await import('node:events');
+
+  const pipe = Object.assign(new EventEmitter(), { isTTY: false });
+  const real = Object.getOwnPropertyDescriptor(process, 'stdin');
+  Object.defineProperty(process, 'stdin', { value: pipe, configurable: true });
+  try {
+    const release = onHotkeys([{ key: 'r', describe: 'restart', run: () => {} }], () => {});
+    assert.equal(typeof release, 'function');
+    release();
+  } finally {
+    if (real) Object.defineProperty(process, 'stdin', real);
+  }
+});
+
+test('the supervisor labels each process and can restart one', async () => {
+  // Three processes inheriting one terminal was the state before this: Nest's
+  // routes, Next's compiles and the worker's logs interleaved and unlabelled,
+  // so the first question about any line was which process wrote it.
+  const { supervise } = await import('./dev-console.ts');
+
+  const written: string[] = [];
+  const supervisor = supervise(
+    [
+      {
+        label: 'api',
+        cwd: process.cwd(),
+        run: [process.execPath, '-e', "console.log('hello from api'); setInterval(() => {}, 1000)"],
+        env: {},
+      },
+      {
+        label: 'web',
+        cwd: process.cwd(),
+        run: [process.execPath, '-e', "console.log('hello from web'); setInterval(() => {}, 1000)"],
+        env: {},
+      },
+    ],
+    (line) => written.push(line),
+  );
+
+  try {
+    await new Promise((r) => setTimeout(r, 1500));
+    const plain = written.join('').replace(/\u001b\[[0-9;]*m/g, '');
+    assert.match(plain, /api\s+\|\s+hello from api/, `no api label in: ${plain}`);
+    assert.match(plain, /web\s+\|\s+hello from web/, `no web label in: ${plain}`);
+
+    // Labels are padded to a common width so the pipes line up; a ragged left
+    // margin is the thing that makes interleaved output hard to scan.
+    assert.match(plain, /api {1,}\|/);
+
+    // Restarting one brings it back, and leaves the other alone.
+    written.length = 0;
+    supervisor.restart('web');
+    await new Promise((r) => setTimeout(r, 1600));
+    const after = written.join('').replace(/\u001b\[[0-9;]*m/g, '');
+    assert.match(after, /web\s+\|\s+hello from web/, `web did not come back: ${after}`);
+    assert.doesNotMatch(after, /hello from api/, 'restarting web must not restart the api');
+  } finally {
+    await supervisor.stop();
+  }
+});

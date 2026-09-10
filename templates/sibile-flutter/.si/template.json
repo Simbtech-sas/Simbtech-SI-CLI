@@ -35,5 +35,16 @@
     "flutter pub get",
     "dart run build_runner build --delete-conflicting-outputs",
     "flutter run --dart-define=API_URL=http://10.0.2.2:8080"
-  ]
+  ],
+  "dev": {
+    "processes": [
+      {
+        "label": "flutter",
+        "run": [
+          "flutter",
+          "run"
+        ]
+      }
+    ]
+  }
 }

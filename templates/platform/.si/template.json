@@ -35,5 +35,18 @@
     "npm run dev                        # the control plane, on :3100",
     "npm run node:add -- --ip <vps>     # or add it in the UI",
     "./cluster/bootstrap-network.sh && ./cluster/bootstrap-k3s.sh"
-  ]
+  ],
+  "dev": {
+    "processes": [
+      {
+        "label": "control plane",
+        "run": [
+          "npm",
+          "run",
+          "dev"
+        ],
+        "port": "web"
+      }
+    ]
+  }
 }

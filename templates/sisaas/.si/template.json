@@ -498,5 +498,41 @@
         }
       ]
     }
-  ]
+  ],
+  "dev": {
+    "compose": "infra/docker-compose.yml",
+    "migrate": "db:migrate",
+    "processes": [
+      {
+        "label": "api",
+        "cwd": "apps/server",
+        "run": [
+          "pnpm",
+          "run",
+          "dev"
+        ],
+        "port": "api"
+      },
+      {
+        "label": "worker",
+        "cwd": "apps/server",
+        "run": [
+          "pnpm",
+          "run",
+          "worker:dev"
+        ],
+        "requires": "worker:dev"
+      },
+      {
+        "label": "web",
+        "cwd": "apps/web",
+        "run": [
+          "pnpm",
+          "run",
+          "dev"
+        ],
+        "port": "web"
+      }
+    ]
+  }
 }

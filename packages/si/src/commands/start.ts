@@ -4,7 +4,9 @@ import { spawn } from 'node:child_process';
 import * as p from '@clack/prompts';
 import pc from 'picocolors';
 import { findProject } from '../project.ts';
+import type { TemplateDev } from '@simbtech/si-core';
 import { nextFree, parameteriseCompose, planPorts, readPortRequests } from '../ports.ts';
+import { lanAddress } from '../lan.ts';
 
 export interface StartOptions {
   /** Bring the stack up and stop, instead of running the app in the foreground. */
@@ -77,17 +79,32 @@ export async function startDev(options: StartOptions): Promise<void> {
   p.intro(pc.bgCyan(pc.black(' si start dev ')));
 
   const project = await findProject();
-  const composePath = path.join(project.root, 'infra', 'docker-compose.yml');
-  if (!(await exists(composePath))) {
-    throw new Error(`no infra/docker-compose.yml in ${project.root} — nothing to start`);
-  }
+
+  // What "everything" means is declared by the template, not decided here: it
+  // is containers plus three Node processes for a SaaS, a Vite server for a
+  // local-first app, `flutter run` for Flutter. Hardcoding the SaaS shape is
+  // why this used to refuse on five of the seven flavours.
+  const dev = project.manifest.dev ?? {
+    compose: 'infra/docker-compose.yml',
+    migrate: 'db:migrate',
+    processes: [
+      { label: 'api', cwd: project.manifest.targets['server'] ?? 'apps/server', run: ['pnpm', 'run', 'dev'], port: 'api' as const },
+      { label: 'worker', cwd: project.manifest.targets['server'] ?? 'apps/server', run: ['pnpm', 'run', 'worker:dev'], requires: 'worker:dev' },
+      { label: 'web', cwd: project.manifest.targets['web'] ?? 'apps/web', run: ['pnpm', 'run', 'dev'], port: 'web' as const },
+    ],
+  };
+
+  // Absent is normal, not an error. A SQLite SiMICE build has no infrastructure
+  // at all, and a local-first app has none by definition.
+  const composePath = dev.compose ? path.join(project.root, dev.compose) : undefined;
+  const hasCompose = composePath !== undefined && (await exists(composePath));
 
   // ── ports, before anything binds one ──────────────────────────────────────
   //
   // Read out of the compose file rather than listed here, so a tool added with
   // `si add` gets a port allocated too: its fragment was merged into this same
   // file, and a hardcoded list in the CLI would know nothing about it.
-  let composeText = await readFile(composePath, 'utf8');
+  let composeText = hasCompose ? await readFile(composePath!, 'utf8') : '';
 
   // A project scaffolded before ports were allocatable has `- '9000:9000'`
   // written out, and a literal is not something this can move — docker binds
@@ -95,8 +112,8 @@ export async function startDev(options: StartOptions): Promise<void> {
   // way to act on it. Migrate the file once, keeping every current port as the
   // default, so from now on they CAN move.
   const migrated = parameteriseCompose(composeText);
-  if (migrated.changed.length > 0) {
-    await writeFile(composePath, migrated.compose, 'utf8');
+  if (hasCompose && migrated.changed.length > 0) {
+    await writeFile(composePath!, migrated.compose, 'utf8');
     composeText = migrated.compose;
     p.log.info(
       `Made ${migrated.changed.length} host port(s) in infra/docker-compose.yml movable.\n` +
@@ -134,16 +151,18 @@ export async function startDev(options: StartOptions): Promise<void> {
 
   // ── dependencies ──────────────────────────────────────────────────────────
   const spin = p.spinner();
-  spin.start('Starting containers');
-  const up = ['compose', '-f', composePath, 'up', '-d'];
-  if (options.scale) up.push('--scale', options.scale);
-  const started = await run('docker', up, project.root, true, plan.env);
-  if (started.code !== 0) {
-    spin.stop(pc.red('docker compose failed'));
-    throw new Error(composeFailure(started.stderr));
+  if (hasCompose) {
+    spin.start('Starting containers');
+    const up = ['compose', '-f', composePath!, 'up', '-d'];
+    if (options.scale) up.push('--scale', options.scale);
+    const started = await run('docker', up, project.root, true, plan.env);
+    if (started.code !== 0) {
+      spin.stop(pc.red('docker compose failed'));
+      throw new Error(composeFailure(started.stderr));
+    }
+    const services = countServices(composeText);
+    spin.stop(`${services} container${services === 1 ? '' : 's'} up`);
   }
-  const services = countServices(composeText);
-  spin.stop(`${services} container${services === 1 ? '' : 's'} up`);
 
   // ── wait for the database to ANSWER, not merely to exist ──────────────────
   //
@@ -153,65 +172,101 @@ export async function startDev(options: StartOptions): Promise<void> {
   //
   // Every Postgres, not just the first: a per-service layout has several, and
   // the one that is slow to start is the one whose migration fails.
-  const databases = postgresServices(composeText);
-  spin.start(`Waiting for Postgres${databases.length > 1 ? ` (${databases.length})` : ''}`);
-  for (const service of databases) {
-    if (!(await waitForPostgres(composePath, project.root, service, plan.env))) {
-      spin.stop(pc.red(`${service} did not become ready`));
-      throw new Error(`${service} never accepted a connection — check \`pnpm infra:logs\``);
+  const databases = hasCompose ? postgresServices(composeText) : [];
+  if (databases.length > 0) {
+    spin.start(`Waiting for Postgres${databases.length > 1 ? ` (${databases.length})` : ''}`);
+    for (const service of databases) {
+      if (!(await waitForPostgres(composePath!, project.root, service, plan.env))) {
+        spin.stop(pc.red(`${service} did not become ready`));
+        throw new Error(`${service} never accepted a connection — check the container logs`);
+      }
     }
+    spin.stop(`Postgres ready${databases.length > 1 ? ` (${databases.length})` : ''}`);
   }
-  spin.stop(`Postgres ready${databases.length > 1 ? ` (${databases.length})` : ''}`);
 
   // ── migrations, one per server app ────────────────────────────────────────
-  if (!options.skipMigrate) {
+  if (!options.skipMigrate && dev.migrate && (await hasScript(project.root, dev.migrate))) {
     spin.start('Applying migrations');
-    const migrated = await run('pnpm', ['run', 'db:migrate'], project.root, true, plan.env);
+    const migrated = await run('pnpm', ['run', dev.migrate], project.root, true, plan.env);
     if (migrated.code !== 0) {
       spin.stop(pc.yellow('Migrations failed'));
       p.log.warn(
         `${migrated.stderr.trim().split('\n').slice(-3).join('\n')}\n` +
-          'The stack is up; fix the migration and run `pnpm db:migrate`.',
+          `The stack is up; fix the migration and run \`pnpm ${dev.migrate}\`.`,
       );
     } else {
       spin.stop('Migrations applied');
     }
   }
 
-  p.note((await runningUrls(composeText, plan.env, apiPort, webPort)).join('\n'), 'Running');
+  // Where a phone on the same Wi-Fi reaches this machine. Falls back to
+  // loopback when there is no LAN, or when the flavour opts out.
+  const onLan = dev.lan !== false;
+  const host = (onLan ? lanAddress() : undefined) ?? 'localhost';
+
+  const urls = runningUrls(dev, composeText, plan.env, apiPort, webPort, host);
+  if (urls.length > 0) p.note(urls.join('\n'), 'Running');
 
   if (options.detach) {
-    p.outro(`Dependencies are up. ${pc.dim('pnpm dev')} to start the app.`);
+    p.outro(
+      hasCompose
+        ? `Dependencies are up. ${pc.dim('pnpm dev')} to start the app.`
+        : 'Nothing to detach from — this flavour has no containers.',
+    );
     return;
   }
 
-  // ── the app: API, worker and web, together ────────────────────────────────
+  // ── the app itself ────────────────────────────────────────────────────────
   //
-  // `turbo run dev` alone starts the API and the web app but NOT the worker —
-  // `worker:dev` is a separate script and turbo never sees it. The worker is
-  // where event delivery and background jobs live, so without it the outbox
-  // fills up and nothing ever handles a job: the app looks like it works right
+  // Each process gets its own environment, which is why this does not shell out
+  // to `turbo run dev`. Two reasons: the API and the web app both read `PORT`,
+  // so one shared environment puts them on the same one; and turbo never ran
+  // the worker at all, because `worker:dev` is not a task in its graph. The
+  // worker is where event delivery and background jobs live, so without it the
+  // outbox fills and nothing handles a job — the app looks like it works right
   // up until you check whether anything happened.
-  p.log.info(`Starting API, worker and web — ${pc.dim('Ctrl-C stops them; containers keep running')}`);
+  const children: Array<Promise<RunResult>> = [];
+  const running: string[] = [];
 
-  // Each process gets its own env, which is why this does not just shell out to
-  // `turbo run dev`. The API and the web app both read `PORT`, so one shared
-  // environment would put them on the same one — and turbo never ran the worker
-  // at all, because `worker:dev` is not a task in its graph.
-  const webDir = path.join(project.root, project.manifest.targets['web'] ?? 'apps/web');
-  const children = [run('pnpm', ['run', 'dev'], serverDir, false, { ...plan.env, PORT: String(apiPort) })];
+  for (const proc of dev.processes) {
+    const cwd = proc.cwd ? path.join(project.root, proc.cwd) : project.root;
+    // A process whose script this project does not have is skipped, not failed:
+    // the same manifest serves a build with a worker and one without.
+    if (proc.requires && !(await hasScript(cwd, proc.requires))) continue;
+    if (!(await exists(cwd))) continue;
 
-  if (await hasScript(serverDir, 'worker:dev')) {
-    children.push(run('pnpm', ['run', 'worker:dev'], serverDir, false, plan.env));
+    const env: Record<string, string> = { ...plan.env };
+    if (proc.port === 'api') env['PORT'] = String(apiPort);
+    if (proc.port === 'web') {
+      env['PORT'] = String(webPort);
+      // The LAN address, not localhost. This value is baked into the browser
+      // bundle, so `localhost` there means the PHONE's own localhost — the page
+      // loads and every request fails, which looks like a broken API rather
+      // than a wrong base URL.
+      env['NEXT_PUBLIC_API_URL'] = `http://${host}:${apiPort}`;
+    }
+
+    const [cmd, ...args] = proc.run;
+    children.push(run(cmd!, args, cwd, false, env));
+    running.push(proc.label);
   }
-  if (await hasScript(webDir, 'dev')) {
-    children.push(
-      run('pnpm', ['run', 'dev'], webDir, false, {
-        ...plan.env,
-        PORT: String(webPort),
-        NEXT_PUBLIC_API_URL: `http://localhost:${apiPort}`,
-      }),
-    );
+
+  if (children.length === 0) {
+    p.outro('Nothing to run — this template declares no dev processes.');
+    return;
+  }
+
+  p.log.info(
+    `Starting ${running.join(', ')} — ${pc.dim('Ctrl-C stops them; containers keep running')}`,
+  );
+
+  // The QR comes AFTER the server answers, not with the startup banner. A code
+  // printed while Next is still compiling gets scanned during those seconds and
+  // shows a connection error, and the natural conclusion is that the feature is
+  // broken rather than early.
+  const webProc = dev.processes.find((proc) => proc.port === 'web');
+  if (webProc && onLan && host !== 'localhost') {
+    void announceOnLan(`http://${host}:${webPort}`, webProc.label);
   }
 
   // The first to exit ends the run: if the API dies, sitting in a web-only
@@ -284,6 +339,51 @@ async function waitForPostgres(
   return false;
 }
 
+/**
+ * Wait for the dev server to answer, then print a QR code for it.
+ *
+ * Scanning beats typing `http://192.168.1.40:3100` into a phone keyboard, and
+ * typing it wrong is the most common reason "it does not work on my phone".
+ *
+ * Fails quietly: this sits on top of a URL that is already printed, so a
+ * machine without QR support, or a server slower than the wait, must not turn a
+ * working stack into an error.
+ */
+async function announceOnLan(url: string, label: string): Promise<void> {
+  const deadline = Date.now() + 90_000;
+  while (Date.now() < deadline) {
+    if (await answers(url)) {
+      try {
+        const qr = (await import('qrcode-terminal')).default;
+        qr.generate(url, { small: true }, (code: string) => {
+          console.log(`\n${code}`);
+          console.log(`  ${pc.cyan(url)}  ${pc.dim(`— the ${label}, on your phone`)}`);
+          console.log(
+            `  ${pc.dim('Same Wi-Fi as this machine. If it will not load, check the firewall.')}\n`,
+          );
+        });
+      } catch {
+        // No QR is fine; the URL is in the summary above.
+      }
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
+/** Does anything answer here yet? Any HTTP reply counts — even a 404. */
+async function answers(url: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2000);
+    await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Is there such a script here? A flavor without a worker must not be asked for one. */
 async function hasScript(dir: string, name: string): Promise<boolean> {
   try {
@@ -324,18 +424,31 @@ async function alignEnv(
   await writeFile(file, text, 'utf8');
 }
 
-/** What is reachable, and where — from the compose file, not a fixed list. */
-async function runningUrls(
+/**
+ * What is reachable, and where.
+ *
+ * Read from the compose file and the declared processes, never a fixed list.
+ * Printing "the API" at a Flutter project, or a MinIO console for a project
+ * scaffolded with `--storage none`, sends people to a dead tab — and a summary
+ * that is wrong once stops being read.
+ */
+function runningUrls(
+  dev: TemplateDev,
   compose: string,
   ports: Record<string, string>,
   apiPort: number,
   webPort: number,
-): Promise<string[]> {
+  host: string,
+): string[] {
   const at = (key: string, fallback: number) => Number(ports[key] ?? fallback);
-  const urls: string[] = [
-    `${pc.cyan(`http://localhost:${apiPort}`)}   the API`,
-    `${pc.cyan(`http://localhost:${webPort}`)}   the web app`,
-  ];
+  const urls: string[] = [];
+
+  // The app's own two on the LAN address, so the line can be typed into a
+  // phone. Everything below is a developer tool that stays on this machine.
+  for (const proc of dev.processes) {
+    if (proc.port === 'api') urls.push(`${pc.cyan(`http://${host}:${apiPort}`)}   ${proc.label}`);
+    if (proc.port === 'web') urls.push(`${pc.cyan(`http://${host}:${webPort}`)}   ${proc.label}`);
+  }
 
   // Only what this project actually runs. Printing a MinIO console for a
   // project scaffolded with `--storage none` sends people to a dead tab.

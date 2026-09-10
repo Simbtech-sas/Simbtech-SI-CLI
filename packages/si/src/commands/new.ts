@@ -440,13 +440,21 @@ export async function newProject(name: string | undefined, options: NewOptions):
     // handed back a project with no node_modules and a build that failed on 251
     // missing jest globals. Scaffolding a project is the reason to install.
     if (!options.skipInstall) {
+      // The template's own package manager, not whatever detection guesses.
+      // Platform is npm workspaces and ships no lockfile, so detection fell
+      // through to pnpm — which installs nothing for an npm workspace, leaving
+      // `apps/web` without node_modules and `npm run dev` failing on a missing
+      // binary. The manifest has said `npm` all along; nothing read it.
+      const pm = manifest.packageManager;
       spinner.start('Installing dependencies');
       try {
-        await installAll(dir);
+        await installAll(dir, pm);
         spinner.stop('Dependencies installed');
       } catch (err) {
         spinner.stop(pc.yellow('Install failed'));
-        p.log.warn(`${err instanceof Error ? err.message : String(err)}\nRun it yourself: pnpm install`);
+        p.log.warn(
+          `${err instanceof Error ? err.message : String(err)}\nRun it yourself: ${pm ?? 'pnpm'} install`,
+        );
       }
     }
 

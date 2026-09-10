@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --host --port ${PORT:-5173}",
     "build": "tsc -b && vite build",
-    "preview": "vite preview",
+    "preview": "vite preview --port ${PORT:-5173}",
     "typecheck": "tsc -b --noEmit",
     "tauri": "tauri",
     "desktop": "tauri dev",

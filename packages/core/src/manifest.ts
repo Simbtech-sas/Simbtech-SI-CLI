@@ -73,6 +73,50 @@ export interface TemplateManifest {
   defaultProfile?: string;
   /** Infrastructure decisions offered at scaffold time. */
   choices?: TemplateChoice[];
+  /**
+   * What `si start dev` runs here.
+   *
+   * Declared per template rather than decided in the CLI, because "everything"
+   * means a different set per flavour: containers and three Node processes for
+   * a SaaS, a Vite server for a local-first app, `flutter run` for Flutter.
+   * Without this the CLI hardcoded the SaaS shape and refused everywhere else.
+   */
+  dev?: TemplateDev;
+}
+
+export interface TemplateDev {
+  /** Compose file to bring up first, relative to the project root. */
+  compose?: string;
+  /** Root package script that applies migrations, run once the database answers. */
+  migrate?: string;
+  /** Processes to run, all of them, together. */
+  processes: TemplateProcess[];
+  /**
+   * Serve on the LAN so a phone can reach it, and print a QR code.
+   *
+   * Defaults to true. SiCAL sets it false: that flavour's whole promise is that
+   * it makes no network calls at all, and putting its dev server on the Wi-Fi
+   * invites exactly the testing that promise says is unnecessary.
+   */
+  lan?: boolean;
+}
+
+export interface TemplateProcess {
+  /** Shown while it runs. */
+  label: string;
+  /** Working directory, relative to the project root. Defaults to the root. */
+  cwd?: string;
+  /** argv. Not a shell string — no quoting rules to get wrong. */
+  run: string[];
+  /**
+   * Which allocated port this one listens on, if any.
+   *
+   * `api` and `web` are the two the CLI allocates for host processes; the value
+   * arrives as PORT in the process's environment.
+   */
+  port?: 'api' | 'web';
+  /** Skipped when this script or file is absent, rather than failing the run. */
+  requires?: string;
 }
 
 export const MANIFEST_PATH = '.si/template.json';

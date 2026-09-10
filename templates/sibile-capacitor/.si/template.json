@@ -36,5 +36,18 @@
     "cp .env.example .env",
     "npm run dev",
     "npx cap add android   # then: npm run cap:android"
-  ]
+  ],
+  "dev": {
+    "processes": [
+      {
+        "label": "app",
+        "run": [
+          "npm",
+          "run",
+          "dev"
+        ],
+        "port": "web"
+      }
+    ]
+  }
 }

@@ -1,0 +1,37 @@
+# Simbkit — the Postgres a `--database postgres` build talks to.
+#
+# Only present when you chose Postgres. A SQLite build has no infrastructure at
+# all: the database is a file next to the app, which is most of why that is the
+# default.
+#
+# In lan-server mode this runs on the one machine that serves the others, and
+# every client points SIMBKIT_DATABASE_URL at it.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#   si start dev        # does this for you, and picks a free port
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-simbkit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-simbkit_dev_pwd}
+      POSTGRES_DB: ${POSTGRES_DB:-simbkit}
+    ports:
+      # 5434 rather than 5432, because a developer machine very often already
+      # runs a native Postgres and the clash is an opaque bind error.
+      - '${POSTGRES_HOST_PORT:-5434}:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # `pg_isready` and not a port check: a container that is listening is not
+      # yet a Postgres that accepts connections, and connecting too early fails
+      # in a way that reads like a bug in the app.
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-simbkit}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

@@ -1,19 +1,46 @@
 {
   "id": "sical",
   "label": "SiCAL",
-  "summary": "Fully local — web tech, no network at all, local-first storage",
-  "brandToken": { "lower": "simbkit", "capital": "Simbkit", "upper": "SIMBKIT" },
-  "packageManager": "npm",
-  "toolCategories": ["local-first", "ai", "geo"],
-  "anchors": {
-    "modules": { "file": "src/db/client.ts", "marker": "// si:modules" }
+  "summary": "Fully local \u2014 web tech, no network at all, local-first storage",
+  "brandToken": {
+    "lower": "simbkit",
+    "capital": "Simbkit",
+    "upper": "SIMBKIT"
   },
-  "targets": { "src": "src" },
+  "packageManager": "npm",
+  "toolCategories": [
+    "local-first",
+    "ai",
+    "geo"
+  ],
+  "anchors": {
+    "modules": {
+      "file": "src/db/client.ts",
+      "marker": "// si:modules"
+    }
+  },
+  "targets": {
+    "src": "src"
+  },
   "nextSteps": [
     "git init && git add -A && git commit -m 'initial commit'",
     "npm install",
     "npm test          # the offline guard's own tests",
     "npm run dev",
     "npm run build     # build + verify:offline, which fails if it can reach the network"
-  ]
+  ],
+  "dev": {
+    "processes": [
+      {
+        "label": "app",
+        "run": [
+          "npm",
+          "run",
+          "dev"
+        ],
+        "port": "web"
+      }
+    ],
+    "lan": false
+  }
 }

@@ -32,5 +32,17 @@
     "npm install",
     "cp .env.example .env",
     "npx expo start"
-  ]
+  ],
+  "dev": {
+    "processes": [
+      {
+        "label": "expo",
+        "run": [
+          "npm",
+          "run",
+          "start"
+        ]
+      }
+    ]
+  }
 }

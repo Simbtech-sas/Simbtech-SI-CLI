@@ -783,3 +783,55 @@ test('the CLI runs when invoked through a symlink, as npm installs it', async ()
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('the LAN address skips loopback and bridge interfaces', async () => {
+  // A phone cannot route to 127.0.0.1, and it cannot route to a docker bridge
+  // either — both are real interfaces with real addresses on this machine, and
+  // putting either in a QR code produces a code that scans and never loads.
+  const { lanAddress } = await import('./lan.ts');
+
+  const address = lanAddress();
+  if (address) {
+    assert.doesNotMatch(address, /^127\./, 'loopback is useless from another device');
+    assert.doesNotMatch(address, /^172\.1[7-9]\.|^172\.2\d\.|^172\.3[01]\./, 'docker bridge range');
+    assert.match(address, /^\d+\.\d+\.\d+\.\d+$/, 'IPv4 only — a phone cannot type a zone index');
+  }
+
+  // No LAN is a normal state, not a failure — `si start dev` falls back to
+  // loopback and prints no QR rather than a code nobody can scan.
+  assert.ok(address === undefined || address.length > 6);
+});
+
+test('every flavor that serves a UI binds it where a phone can reach it', async () => {
+  // Binding to localhost is the default for Vite and it is the wrong one here:
+  // the URL is printed, the QR is scanned, and the page never loads. SiCAL is
+  // the deliberate exception — that flavour's promise is that it makes no
+  // network calls, so its dev server has no business on the Wi-Fi.
+  const { readFile } = await import('node:fs/promises');
+  const root = new URL('../../../templates/', import.meta.url);
+
+  const SERVES_UI: Array<[string, string]> = [
+    ['sisaas', 'apps/web/package.json'],
+    ['platform', 'apps/web/package.json'],
+    ['simice', 'package.json'],
+    ['sibile-capacitor', 'package.json'],
+  ];
+
+  for (const [flavor, pkgPath] of SERVES_UI) {
+    const pkg = JSON.parse(await readFile(new URL(`${flavor}/${pkgPath}`, root), 'utf8')) as {
+      scripts: Record<string, string>;
+    };
+    const dev = pkg.scripts['dev']!;
+    assert.match(
+      dev,
+      /--host|-H 0\.0\.0\.0/,
+      `${flavor} serves its UI on localhost only, so a phone cannot reach it: ${dev}`,
+    );
+    assert.match(dev, /\$\{PORT:-\d+\}/, `${flavor} ignores the port si allocated: ${dev}`);
+  }
+
+  const sical = JSON.parse(await readFile(new URL('sical/.si/template.json', root), 'utf8')) as {
+    dev: { lan?: boolean };
+  };
+  assert.equal(sical.dev.lan, false, 'SiCAL must opt out of the LAN — it promises no network');
+});

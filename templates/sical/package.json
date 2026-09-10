@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --port ${PORT:-5173}",
     "build": "tsc -b && vite build && npm run verify:offline",
-    "preview": "vite preview",
+    "preview": "vite preview --port ${PORT:-5173}",
     "typecheck": "tsc -b --noEmit",
     "verify:offline": "node scripts/verify-offline.mjs",
     "test": "node --test \"scripts/**/*.test.mjs\"",

@@ -117,6 +117,18 @@ export interface TemplateProcess {
   port?: 'api' | 'web';
   /** Skipped when this script or file is absent, rather than failing the run. */
   requires?: string;
+  /**
+   * Hold this process back until that one is answering.
+   *
+   * The web app waits for the API. Started together, the API's boot — Nest logs
+   * a line per route — scrolls past everything the web app printed, including
+   * the QR code, which is the one thing worth looking at.
+   *
+   * A wait, not a dependency: if nothing answers in time it starts anyway. A
+   * front end that refuses to start because the API is down is worse than one
+   * that starts and shows the error.
+   */
+  waitFor?: 'api' | 'web';
 }
 
 export const MANIFEST_PATH = '.si/template.json';

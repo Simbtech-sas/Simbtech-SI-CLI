@@ -13,6 +13,18 @@ export interface Managed {
   cwd: string;
   run: string[];
   env: Record<string, string>;
+  /**
+   * Hold this one back until something answers here.
+   *
+   * The web app waits for the API. Started together, the API's boot — Nest logs
+   * a line per route — scrolls past everything the web app said, including the
+   * QR code, which is the one thing you wanted to look at.
+   *
+   * It is a wait, not a dependency: if nothing ever answers, the process starts
+   * anyway once the deadline passes. A front end that will not start because
+   * the API is down is worse than one that starts and shows the error.
+   */
+  waitFor?: { url: string; seconds: number };
 }
 
 /** Enough colours to keep three or four processes apart, reused beyond that. */
@@ -90,7 +102,27 @@ export function supervise(
     children.set(proc.label, child);
   }
 
-  processes.forEach(start);
+  // Sequential, so a process that waits actually delays the ones after it.
+  void (async () => {
+    for (const [index, proc] of processes.entries()) {
+      if (proc.waitFor) {
+        const up = await answersWithin(proc.waitFor.url, proc.waitFor.seconds);
+        // Starting anyway is right — a front end that shows the error beats one
+        // that refuses to boot. Doing it SILENTLY is not: the console would
+        // carry on to a QR code and look like a healthy start while the thing
+        // it waited for is dead.
+        if (!up) {
+          out(
+            `${pc.yellow('!')} ${pc.dim(
+              `${proc.waitFor.url} never answered — starting ${proc.label} anyway, but expect it to fail`,
+            )}\n`,
+          );
+        }
+      }
+      if (stopping) return;
+      start(proc, index);
+    }
+  })();
 
   return {
     whenAnyExits,
@@ -104,7 +136,15 @@ export function supervise(
       // A moment for the port to come free. Restarting straight into "address
       // already in use" is the failure this avoids, and it reads like a crash.
       setTimeout(() => {
-        for (const proc of targets) start(proc, processes.indexOf(proc));
+        // On a full restart the ordering matters again; restarting one process
+        // on its own does not wait, because whatever it waited for is already up.
+        void (async () => {
+          for (const proc of targets) {
+            if (!label && proc.waitFor) await answersWithin(proc.waitFor.url, proc.waitFor.seconds);
+            if (stopping) return;
+            start(proc, processes.indexOf(proc));
+          }
+        })();
       }, 400);
     },
     async stop() {
@@ -116,6 +156,28 @@ export function supervise(
       children.clear();
     },
   };
+}
+
+/**
+ * Poll until something replies, or the deadline passes.
+ *
+ * Any HTTP answer counts, including a 404 — the question is whether the process
+ * is listening, not whether that particular path exists.
+ */
+async function answersWithin(url: string, seconds: number): Promise<boolean> {
+  const deadline = Date.now() + seconds * 1000;
+  while (Date.now() < deadline) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1500);
+      await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+      return true;
+    } catch {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  return false;
 }
 
 export interface Hotkey {

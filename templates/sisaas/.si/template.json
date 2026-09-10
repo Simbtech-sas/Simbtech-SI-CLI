@@ -531,7 +531,8 @@
           "run",
           "dev"
         ],
-        "port": "web"
+        "port": "web",
+        "waitFor": "api"
       }
     ]
   }

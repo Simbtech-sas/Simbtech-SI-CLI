@@ -246,7 +246,23 @@ export async function startDev(options: StartOptions): Promise<void> {
       env['NEXT_PUBLIC_API_URL'] = `http://${host}:${apiPort}`;
     }
 
-    managed.push({ label: proc.label, cwd, run: proc.run, env });
+    managed.push({
+      label: proc.label,
+      cwd,
+      run: proc.run,
+      env,
+      // A health probe would be better than a port check, but every flavour
+      // would need one and a listening socket is what the next process
+      // actually needs.
+      ...(proc.waitFor
+        ? {
+            waitFor: {
+              url: `http://localhost:${proc.waitFor === 'api' ? apiPort : webPort}`,
+              seconds: 60,
+            },
+          }
+        : {}),
+    });
   }
 
   if (managed.length === 0) {

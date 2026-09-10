@@ -1001,3 +1001,84 @@ test('the supervisor labels each process and can restart one', async () => {
     await supervisor.stop();
   }
 });
+
+test('a process with waitFor is held back until the one before it answers', async () => {
+  // The QR code is printed once the web app starts. Started together, the API's
+  // boot — Nest logs a line per route — scrolled past it, so the one thing you
+  // wanted to look at was never at the bottom.
+  const { supervise } = await import('./dev-console.ts');
+
+  const port = 41_777;
+  const written: string[] = [];
+  const supervisor = supervise(
+    [
+      {
+        label: 'api',
+        cwd: process.cwd(),
+        // Deliberately slow to listen: an API that answers immediately would
+        // pass this test even with the wait removed entirely.
+        run: [
+          process.execPath,
+          '-e',
+          `setTimeout(() => require('node:http').createServer((_, res) => res.end('ok')).listen(${port}, () => console.log('api listening')), 1200)`,
+        ],
+        env: {},
+      },
+      {
+        label: 'web',
+        cwd: process.cwd(),
+        run: [process.execPath, '-e', "console.log('web up'); setInterval(() => {}, 1000)"],
+        env: {},
+        waitFor: { url: `http://localhost:${port}`, seconds: 10 },
+      },
+    ],
+    (line) => written.push(line),
+  );
+
+  try {
+    await new Promise((r) => setTimeout(r, 600));
+    assert.doesNotMatch(
+      written.join(''),
+      /web up/,
+      'web started before the api answered — the wait is not being honoured',
+    );
+
+    await new Promise((r) => setTimeout(r, 2500));
+    const plain = written.join('').replace(/\[[0-9;]*m/g, '');
+    assert.match(plain, /web\s+\|\s+web up/, `web never started: ${plain}`);
+    assert.ok(plain.indexOf('api listening') < plain.indexOf('web up'), `web came first: ${plain}`);
+  } finally {
+    await supervisor.stop();
+  }
+});
+
+test('a wait that times out starts the process anyway, and says so', async () => {
+  // Silently starting the web app after a timeout produced a console showing a
+  // QR code for a front end whose API was dead. Starting it is right; doing it
+  // quietly is not.
+  const { supervise } = await import('./dev-console.ts');
+
+  const written: string[] = [];
+  const supervisor = supervise(
+    [
+      {
+        label: 'web',
+        cwd: process.cwd(),
+        run: [process.execPath, '-e', "console.log('web up'); setInterval(() => {}, 1000)"],
+        env: {},
+        // Nothing listens here.
+        waitFor: { url: 'http://127.0.0.1:41778', seconds: 1 },
+      },
+    ],
+    (line) => written.push(line),
+  );
+
+  try {
+    await new Promise((r) => setTimeout(r, 3000));
+    const plain = written.join('').replace(/\[[0-9;]*m/g, '');
+    assert.match(plain, /never answered/, `no warning about the dead dependency: ${plain}`);
+    assert.match(plain, /web up/, `the process was not started after the timeout: ${plain}`);
+  } finally {
+    await supervisor.stop();
+  }
+});
